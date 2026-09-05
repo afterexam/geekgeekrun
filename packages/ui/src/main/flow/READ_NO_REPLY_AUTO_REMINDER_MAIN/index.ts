@@ -69,7 +69,7 @@ const rechatLlmFallback =
   RECHAT_LLM_FALLBACK.SEND_LOOK_FORWARD_EMOTION
 
 const dynamicChatTurnCountMap = new Map<string, number>()
-const lastHandledMsgTimeMap = new Map<string, number>()
+const handledLastMsgMap = new Map<string, string>()
 
 const fieldsForUseCommonConfig = readConfigFile('boss.json').fieldsForUseCommonConfig ?? {}
 const commonJobConditionConfig = readConfigFile('common-job-condition-config.json') ?? {}
@@ -551,9 +551,13 @@ const mainLoop = async () => {
 
       // 2. HR 回复后动态多轮对话条件（未达10轮上限）
       const currentTurns = dynamicChatTurnCountMap.get(it.encryptBossId) || 0
+      const isAlreadyHandled =
+        handledLastMsgMap.get(it.encryptBossId) === (it.lastMessageId || it.lastText || String(it.lastTS || '')) &&
+        !it.unreadCount
       const isHrReplied =
         enableDynamicChatWithHr &&
         currentTurns < maxDynamicChatTurns &&
+        !isAlreadyHandled &&
         ((!it.lastIsSelf && it.lastText !== '开场问题，期待你的回答') || it.unreadCount > 0)
 
       return isUnrepliedFollowUp || isHrReplied
@@ -662,16 +666,14 @@ const mainLoop = async () => {
     const isLastMessageFromHr = lastMsg && !lastMsg.isSelf
     const currentTurns = dynamicChatTurnCountMap.get(targetBoss.encryptBossId) || 0
 
-    // 静默会话去重：若开启了静默且此条 HR 消息此前已处理过，跳过重复 LLM 判定
-    const lastMsgTime = lastMsg?.time || 0
-    const previousHandledTime = lastHandledMsgTimeMap.get(targetBoss.encryptBossId)
+    // 已处理会话去重：若此条 HR 消息此前已处理过，跳过重复调用
+    const lastMsgKey = targetBoss.lastMessageId || targetBoss.lastText || String(targetBoss.lastTS || '')
     if (
-      enableLlmDoNothing &&
       isLastMessageFromHr &&
-      previousHandledTime &&
-      previousHandledTime === lastMsgTime
+      handledLastMsgMap.get(targetBoss.encryptBossId) === lastMsgKey
     ) {
-      console.log(`[dynamicChat] 会话 【${targetBoss.name}】 最新消息在上一轮已处理（处于静默中），跳过重复调用`)
+      console.log(`[dynamicChat] 会话 【${targetBoss.name}】 最新消息在上一轮已处理，跳过重复调用`)
+      cursorToContinueFind = toCheckItemAtIndex + 1
       continue
     }
 
@@ -834,10 +836,8 @@ const mainLoop = async () => {
           emailForwardReplyMessage
         })
 
-        // 记录当前已处理的消息时间戳
-        if (lastMsgTime) {
-          lastHandledMsgTimeMap.set(targetBoss.encryptBossId, lastMsgTime)
-        }
+        // 记录当前已处理的消息标识
+        handledLastMsgMap.set(targetBoss.encryptBossId, lastMsgKey)
 
         if (replyResult.action === 'send_resume') {
           console.log(`[dynamicChat] 大模型决定通过工具栏主动发送简历 (原因: ${replyResult.reason})`)
@@ -997,9 +997,8 @@ const mainLoop = async () => {
           gtag('rnrr_look_forward_reply_emotion_sent')
         }
       }
-    } else {
-      cursorToContinueFind += 1
     }
+    cursorToContinueFind = toCheckItemAtIndex + 1
     await sleep(1000)
     await saveCurrentChatRecord(pageMapByName.boss!)
     await sleep(3000)

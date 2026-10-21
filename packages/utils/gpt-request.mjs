@@ -1,9 +1,25 @@
 import OpenAI from "openai";
 import https from "node:https";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 const httpsAgent = new https.Agent({
   rejectUnauthorized: false
 });
+
+// ponytail: stdlib append-only daily JSONL trace, zero external dependencies
+function logTrace(entry) {
+  try {
+    const now = new Date();
+    const d = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const dir = path.join(os.homedir(), '.geekgeekrun', 'logs', 'llm');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, `llm-${d}.jsonl`), JSON.stringify(entry) + '\n', 'utf-8');
+  } catch (err) {
+    console.error('[llm-log-error]', err?.message);
+  }
+}
 
 /**
  * 调用 Chat Completions API，支持推理模型（thinking 参数）。
@@ -31,7 +47,7 @@ export async function completes(
     httpAgent: httpsAgent
   });
 
-  const isThinking = !!(thinking?.enabled && thinking?.budget)
+  const isThinking = !!(thinking?.enabled && thinking?.budget);
 
   // 推理模型开启 thinking 时，max_tokens 必须大于 thinking_budget，否则会因长度上限截断 JSON。
   // 调用方若未显式传 max_tokens，按是否启用 thinking 给一个安全的默认值。
@@ -40,7 +56,7 @@ export async function completes(
       ? max_tokens
       : isThinking
         ? 8192
-        : 1200
+        : 1200;
 
   // temperature：推理模型启用 thinking 时建议 ≥0.5（部分 provider 限制），普通 JSON 输出用 0.1。
   const resolvedTemperature =
@@ -48,43 +64,97 @@ export async function completes(
       ? temperature
       : isThinking
         ? 0.6
-        : 0.1
+        : 0.1;
 
   const createParams = {
     messages,
     model,
     max_tokens: resolvedMaxTokens,
     temperature: resolvedTemperature,
-  }
+  };
 
   if (isThinking) {
     // SiliconFlow / 火山方舟等兼容顶层参数；OpenAI SDK 通过 extra_body 透传其他字段
-    createParams.enable_thinking = true
-    createParams.thinking_budget = thinking.budget
+    createParams.enable_thinking = true;
+    createParams.thinking_budget = thinking.budget;
   }
 
   if (response_format) {
-    createParams.response_format = response_format
+    createParams.response_format = response_format;
   }
 
   if (tools) {
-    createParams.tools = tools
+    createParams.tools = tools;
   }
 
   if (tool_choice) {
-    createParams.tool_choice = tool_choice
+    createParams.tool_choice = tool_choice;
   }
 
-  const completion = await openai.chat.completions.create(createParams);
+  const startTime = Date.now();
+  const maskedKey = apiKey && apiKey.length > 8 ? `${apiKey.slice(0, 5)}****${apiKey.slice(-4)}` : '****';
 
-  // reasoning_content 仅推理模型填充，普通模型为 undefined
-  const msg = completion.choices[0].message
-  if (msg.reasoning_content) {
-    console.log('[gpt-request] reasoning_content:', String(msg.reasoning_content ?? '').slice(0, 200))
+  try {
+    const completion = await openai.chat.completions.create(createParams);
+
+    // reasoning_content 仅推理模型填充，普通模型为 undefined
+    const msg = completion.choices[0].message;
+    if (msg.reasoning_content) {
+      console.log('[gpt-request] reasoning_content:', String(msg.reasoning_content ?? '').slice(0, 200));
+    }
+    if (msg.tool_calls) {
+      console.log('[gpt-request] tool_calls:', JSON.stringify(msg.tool_calls));
+    }
+    console.log('[gpt-request] content:', (msg.content ?? '').slice(0, 200));
+
+    logTrace({
+      timestamp: new Date().toISOString(),
+      duration_ms: Date.now() - startTime,
+      status: 'success',
+      model,
+      baseURL,
+      apiKey: maskedKey,
+      request: {
+        messages,
+        params: {
+          max_tokens: resolvedMaxTokens,
+          temperature: resolvedTemperature,
+          response_format: response_format ?? null,
+          thinking: thinking ?? null,
+          tools: tools ?? null,
+          tool_choice: tool_choice ?? null
+        }
+      },
+      response: {
+        role: msg.role,
+        content: msg.content ?? null,
+        reasoning_content: msg.reasoning_content ?? null,
+        tool_calls: msg.tool_calls ?? null,
+        finish_reason: completion.choices[0]?.finish_reason ?? null
+      },
+      usage: completion.usage ?? null
+    });
+
+    return completion;
+  } catch (err) {
+    logTrace({
+      timestamp: new Date().toISOString(),
+      duration_ms: Date.now() - startTime,
+      status: 'error',
+      model,
+      baseURL,
+      apiKey: maskedKey,
+      request: {
+        messages,
+        params: { max_tokens: resolvedMaxTokens, temperature: resolvedTemperature }
+      },
+      error: {
+        name: err?.name,
+        message: err?.message,
+        status: err?.status,
+        stack: err?.stack
+      }
+    });
+    throw err;
   }
-  if (msg.tool_calls) {
-    console.log('[gpt-request] tool_calls:', JSON.stringify(msg.tool_calls))
-  }
-  console.log('[gpt-request] content:', (msg.content ?? '').slice(0, 200));
-  return completion;
 }

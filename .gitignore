@@ -1,4 +1,20 @@
 node_modules
 database.sqlite
-.env.local
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
 
+# secrets
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+*.log.*
+
+# build / temp artifacts
+packages/ui/electron.vite.config.*.mjs
+electron.vite.config.*.mjs
+.DS_Store

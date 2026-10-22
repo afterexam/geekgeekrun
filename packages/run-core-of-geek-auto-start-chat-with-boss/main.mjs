@@ -60,10 +60,12 @@ const main = async () => {
     errorEncounter: new SyncHook(['errorInfo']),
     encounterEmptyRecommendJobList: new AsyncSeriesHook(['args']),
     sageTimeEnter: new AsyncSeriesHook(['args']),
-    sageTimeExit: new AsyncSeriesHook(['args'])
+    sageTimeExit: new AsyncSeriesHook(['args']),
+    jobDetailIsGetFromRecommendList: new AsyncSeriesHook(['jobInfo']),
+    jobMarkedAsNotSuit: new AsyncSeriesHook(['args'])
   }
   initPlugins(hooks)
-  await hooks.daemonInitialized.callAsync()
+  await new Promise((resolve, reject) => hooks.daemonInitialized.callAsync((err) => { if (err) reject(err); else resolve(); }))
   while (true) {
     try {
       await mainLoop(hooks)

@@ -18,8 +18,8 @@ import {
   checkAnyCombineBossRecommendFilterHasCondition,
   formatStaticCombineFilters,
 } from './combineCalculator.mjs'
-import { default as jobFilterConditions } from './internal-config/job-filter-conditions-20241002.json'
-import { default as rawIndustryFilterExemption } from './internal-config/job-filter-industry-filter-exemption-20241002.json'
+import { default as jobFilterConditions } from './internal-config/job-filter-conditions-20241002.json' with { type: 'json' }
+import { default as rawIndustryFilterExemption } from './internal-config/job-filter-industry-filter-exemption-20241002.json' with { type: 'json' }
 import { ChatStartupFrom } from '@geekgeekrun/sqlite-plugin/dist/entity/ChatStartupLog'
 import {
   MarkAsNotSuitReason,

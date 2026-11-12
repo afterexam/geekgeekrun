@@ -1,7 +1,7 @@
 import { Page } from 'puppeteer'
 import { sleepWithRandomDelay, sleep } from '@geekgeekrun/utils/sleep.mjs'
 import { completes } from '@geekgeekrun/utils/gpt-request.mjs'
-import { recordGptCompletionRequest, RequestSceneEnum } from '../../features/llm-request-log'
+import { recordGptCompletionRequest, recordChatMessages, RequestSceneEnum } from '../../features/llm-request-log'
 import {
   readConfigFile,
   readStorageFile,
@@ -175,11 +175,13 @@ export const requestNewMessageContent = async (
   {
     requestScene,
     llmConfigIdForPick,
-    jobInfoText
+    jobInfoText,
+    sessionId
   }: {
     requestScene?: RequestSceneEnum
     llmConfigIdForPick?: string[]
     jobInfoText?: string
+    sessionId?: string
   } = {}
 ) => {
   const systemMessageTemplate = await getValidTemplate({ type: 'rechat' })
@@ -258,7 +260,8 @@ export const requestNewMessageContent = async (
           apiKey: process.env.OPENAI_API_KEY || llmConfig.providerApiSecret,
           model: process.env.LLM_MODEL || llmConfig.model
         },
-        chatList
+        chatList,
+        sessionId ?? null
       )
       res = completion?.choices?.[0] ?? null
       Object.assign(llmRequestRecord, {
@@ -319,11 +322,12 @@ export const requestNewMessageContent = async (
   }
 }
 
-export async function getGptContent(chatRecords, jobInfoText?: string) {
+export async function getGptContent(chatRecords, jobInfoText?: string, sessionId?: string) {
   const textToSend = (
     await requestNewMessageContent(chatRecords, {
       requestScene: RequestSceneEnum.readNoReplyAutoReminder,
-      jobInfoText
+      jobInfoText,
+      sessionId
     })
   ).responseText
   return textToSend
@@ -681,14 +685,16 @@ export const sendAgentNotificationEmail = async ({
  * 请求大模型生成针对 HR 回复的拟人化多轮对话内容，并支持 send_resume 与 send_email_to_candidate Tool 调用
  */
 export const requestDynamicDialogueReply = async (
-  chatRecords: Array<{ isSelf: boolean; text?: string; messageType?: string }>,
+  chatRecords: Array<{ isSelf: boolean; text?: string; messageType?: string; mid?: number; time?: number | string | Date; type?: string; style?: string }>,
   {
     llmConfigIdForPick,
     enableSendResumeTool = true,
     enableEmailForwardTool = true,
     enableDoNothing = true,
     jobInfoText,
-    emailForwardReplyMessage
+    emailForwardReplyMessage,
+    sessionId,
+    encryptBossId
   }: {
     llmConfigIdForPick?: string[]
     enableSendResumeTool?: boolean
@@ -696,6 +702,8 @@ export const requestDynamicDialogueReply = async (
     enableDoNothing?: boolean
     jobInfoText?: string
     emailForwardReplyMessage?: string
+    sessionId?: string
+    encryptBossId?: string
   } = {}
 ): Promise<{
   action: 'send_text' | 'send_resume' | 'send_email' | 'do_nothing'
@@ -759,6 +767,12 @@ export const requestDynamicDialogueReply = async (
     })
   }
 
+  // 把本次对话轮次写进 chat_message_record（可靠来源：LLM 输入用的同一份 history，
+  // 不再依赖抠 BOSS 页面 Vue 内部状态）。无 encryptBossId 时跳过，不阻塞对话。
+  if (encryptBossId) {
+    await recordChatMessages(chatRecords, encryptBossId)
+  }
+
   let res: any = null
   let llmConfig: any = null
   const llmRequestRecord: Omit<LlmModelUsageRecord, 'id' | 'providerApiSecretMd5'> & {
@@ -803,7 +817,7 @@ export const requestDynamicDialogueReply = async (
         completesParams.tools = tools
       }
 
-      const completion = await completes(completesParams, chatList)
+      const completion = await completes(completesParams, chatList, sessionId ?? null)
       res = completion?.choices?.[0] ?? null
       Object.assign(llmRequestRecord, {
         completionTokens: completion.usage?.completion_tokens ?? null,

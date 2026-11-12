@@ -679,6 +679,8 @@ const mainLoop = async () => {
 
     // 从数据库获取岗位原始 JD 信息并直接作为上下文
     const currentEncryptJobId = targetBoss.encryptJobId || conversationInfo?.encryptJobId
+    // 会话标识：一位 HR + 一个职位 = 一段对话，用于 trace 日志分组与后续追踪
+    const sessionId = [targetBoss.encryptBossId, currentEncryptJobId].filter(Boolean).join(':')
     let jobInfoRecord: JobInfo | null = null
     try {
       const ds = await dbInitPromise
@@ -833,7 +835,9 @@ const mainLoop = async () => {
           enableEmailForwardTool,
           enableDoNothing: enableLlmDoNothing,
           jobInfoText,
-          emailForwardReplyMessage
+          emailForwardReplyMessage,
+          sessionId,
+          encryptBossId: targetBoss.encryptBossId
         })
 
         // 记录当前已处理的消息标识
@@ -961,7 +965,7 @@ const mainLoop = async () => {
           gtag('rnrr_llm_content_sent')
         } else {
           try {
-            const textToSend = await getGptContent(messageList, jobInfoText)
+            const textToSend = await getGptContent(messageList, jobInfoText, sessionId)
             await sendMessage(pageMapByName.boss!, textToSend)
             gtag('rnrr_llm_content_sent')
           } catch (err) {
@@ -975,7 +979,7 @@ const mainLoop = async () => {
       } else {
         if (rechatContentSource === RECHAT_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT) {
           try {
-            const textToSend = await getGptContent(messageList, jobInfoText)
+            const textToSend = await getGptContent(messageList, jobInfoText, sessionId)
             await sendMessage(pageMapByName.boss!, textToSend)
             gtag('rnrr_llm_content_sent')
           } catch (err) {

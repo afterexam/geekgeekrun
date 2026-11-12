@@ -26,6 +26,7 @@ function logTrace(entry) {
  *
  * @param {{ baseURL: string, apiKey: string, model: string, max_tokens?: number, temperature?: number, thinking?: { enabled?: boolean, budget?: number } }} config
  * @param {Array<{ role: string, content: string }>} messages
+ * @param {string} [sessionId] 会话标识（一位 HR 的一段对话），仅用于追踪日志分组，不传为 null
  */
 export async function completes(
   {
@@ -39,7 +40,8 @@ export async function completes(
     tools,
     tool_choice
   },
-  messages
+  messages,
+  sessionId = null
 ) {
   const openai = new OpenAI({
     baseURL,
@@ -114,6 +116,7 @@ export async function completes(
       model,
       baseURL,
       apiKey: maskedKey,
+      sessionId: sessionId ?? null,
       request: {
         messages,
         params: {
@@ -144,6 +147,7 @@ export async function completes(
       model,
       baseURL,
       apiKey: maskedKey,
+      sessionId: sessionId ?? null,
       request: {
         messages,
         params: { max_tokens: resolvedMaxTokens, temperature: resolvedTemperature }

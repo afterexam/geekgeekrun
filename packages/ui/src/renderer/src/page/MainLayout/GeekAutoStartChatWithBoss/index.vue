@@ -1724,7 +1724,8 @@ import { activeDescList } from '@geekgeekrun/geek-auto-start-chat-with-boss/cons
 import {
   calculateTotalCombinations,
   checkAnyCombineBossRecommendFilterHasCondition,
-  formatStaticCombineFilters
+  formatStaticCombineFilters,
+  normalizeJobTypeList
 } from '@geekgeekrun/geek-auto-start-chat-with-boss/combineCalculator.mjs'
 import { gtagRenderer as baseGtagRenderer } from '@renderer/utils/gtag'
 import {
@@ -1872,9 +1873,9 @@ electron.ipcRenderer.invoke('fetch-config-file-content').then((res) => {
     industryList: [],
     jobTypeList: []
   }
-  if (!formContent.value.anyCombineRecommendJobFilter.jobTypeList) {
-    formContent.value.anyCombineRecommendJobFilter.jobTypeList = []
-  }
+  formContent.value.anyCombineRecommendJobFilter.jobTypeList = normalizeJobTypeList(
+    formContent.value.anyCombineRecommendJobFilter.jobTypeList
+  )
   unwatchAnyCombineRecommendJobFilter.value = watch(
     () => formContent.value?.anyCombineRecommendJobFilter,
     debounce(() => {

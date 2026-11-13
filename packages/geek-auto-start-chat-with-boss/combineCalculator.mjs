@@ -61,12 +61,12 @@ function combineWithZero(arr, min, max) {
 export const JOB_TYPE_OPTIONS = [
   { code: 1, name: '全职' },
   { code: 2, name: '兼职' },
-  { code: 3, name: '实习' },
+  { code: 3, name: '实习' }
 ]
 
 export const JOB_TYPE_NAME_BY_CODE = {
   0: '不限',
-  ...Object.fromEntries(JOB_TYPE_OPTIONS.map((it) => [it.code, it.name])),
+  ...Object.fromEntries(JOB_TYPE_OPTIONS.map((it) => [it.code, it.name]))
 }
 
 const COMBINABLE_FILTER_KEYS = [
@@ -75,7 +75,7 @@ const COMBINABLE_FILTER_KEYS = [
   'experienceList',
   'degreeList',
   'scaleList',
-  'industryList',
+  'industryList'
 ]
 
 export function normalizeJobTypeList(jobTypeList) {
@@ -103,8 +103,8 @@ export function* combineFiltersWithConstraintsGenerator(selectedFilters) {
     degreeList,
     scaleList,
     industryList,
-    jobTypeList,
-  } = selectedFilters ?? {};
+    jobTypeList
+  } = selectedFilters ?? {}
   const normalizedJobTypeList = normalizeJobTypeList(jobTypeList)
 
   // 生成符合限制条件的组合
@@ -129,7 +129,7 @@ export function* combineFiltersWithConstraintsGenerator(selectedFilters) {
                 degreeList: degree,
                 scaleList: scale,
                 industryList: industry,
-                jobTypeList: [...normalizedJobTypeList],
+                jobTypeList: [...normalizedJobTypeList]
               }
             }
           }
@@ -183,7 +183,12 @@ export function checkAnyCombineBossRecommendFilterHasCondition(value) {
 export function getStaticCombineFilterKey(condition) {
   const kAsO = {}
   for (const key of Object.keys(condition ?? []).sort()) {
-    if (condition[key] === null || condition[key] === undefined || condition[key] === '') {
+    if (
+      condition[key] === null ||
+      condition[key] === undefined ||
+      condition[key] === '' ||
+      (key === 'jobType' && Number(condition[key]) === 0)
+    ) {
       continue
     }
     kAsO[key] = condition[key]

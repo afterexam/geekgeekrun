@@ -1775,7 +1775,15 @@ const router = useRouter()
 const formContent = ref({
   dingtalkRobotAccessToken: '',
   expectCompanies: '',
-  anyCombineRecommendJobFilter: {},
+  anyCombineRecommendJobFilter: {
+    cityList: [] as string[],
+    salaryList: [] as number[],
+    experienceList: [] as number[],
+    degreeList: [] as number[],
+    scaleList: [] as number[],
+    industryList: [] as number[],
+    jobTypeList: [] as number[]
+  },
   combineRecommendJobFilterType: 1,
   staticCombineRecommendJobFilterConditions: [],
   expectJobNameRegExpStr: '',

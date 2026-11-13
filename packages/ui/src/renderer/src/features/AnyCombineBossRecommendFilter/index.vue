@@ -128,13 +128,13 @@
     </div>
     <div class="filter-item">
       <div font-size-12px>求职类型</div>
-      <el-select
-        v-model="selectedJobType"
-        clearable
-        :value-on-clear="null"
-        placeholder="不限"
-      >
-        <el-option v-for="it in JOB_TYPE_OPTIONS" :key="it.code" :value="it.code" :label="it.name" />
+      <el-select v-model="selectedJobType" clearable :value-on-clear="null" placeholder="不限">
+        <el-option
+          v-for="it in JOB_TYPE_OPTIONS"
+          :key="it.code"
+          :value="it.code"
+          :label="it.name"
+        />
       </el-select>
     </div>
   </div>

@@ -485,6 +485,16 @@ export function testIfJobTitleOrDescriptionSuit (jobInfo, matchLogic) {
   }
 }
 
+async function findDropdownOptionByText (dropdownProxy, targetText) {
+  if (!targetText) {
+    return null
+  }
+  return await page.evaluateHandle((dropdownEl, text) => {
+    const matchedLi = Array.from(dropdownEl.querySelectorAll('ul li')).find(li => li.textContent?.trim() === text)
+    return matchedLi ? (matchedLi.querySelector('a') || matchedLi) : null
+  }, dropdownProxy, targetText).then(h => h.asElement())
+}
+
 async function setFilterCondition (selectedFilters) {
   const {
     cityList = [],
@@ -605,10 +615,7 @@ async function setFilterCondition (selectedFilters) {
             // select 不限 immediately
             let buxianOptionElProxy = await page.$(`.page-jobs-main .filter-condition-inner [ka="${optionKaPrefix}${0}"]`)
             if (!buxianOptionElProxy && placeholderText === '求职类型') {
-              buxianOptionElProxy = await page.evaluateHandle((dropdownEl) => {
-                const matchedLi = Array.from(dropdownEl.querySelectorAll('ul li')).find(li => li.textContent?.trim() === '不限')
-                return matchedLi ? (matchedLi.querySelector('a') || matchedLi) : null
-              }, filterDropdownProxy).then(h => h.asElement())
+              buxianOptionElProxy = await findDropdownOptionByText(filterDropdownProxy, '不限')
             }
             if (buxianOptionElProxy) {
               await buxianOptionElProxy.click()
@@ -666,13 +673,7 @@ async function setFilterCondition (selectedFilters) {
             await sleepWithRandomDelay(500)
             let optionElProxy = await page.$(`.page-jobs-main .filter-condition-inner [ka="${optionKaPrefix}${optionValue}"]`)
             if (!optionElProxy && placeholderText === '求职类型') {
-              const targetText = JOB_TYPE_NAME_BY_CODE[optionValue]
-              if (targetText) {
-                optionElProxy = await page.evaluateHandle((dropdownEl, text) => {
-                  const matchedLi = Array.from(dropdownEl.querySelectorAll('ul li')).find(li => li.textContent?.trim() === text)
-                  return matchedLi ? (matchedLi.querySelector('a') || matchedLi) : null
-                }, filterDropdownProxy, targetText).then(h => h.asElement())
-              }
+              optionElProxy = await findDropdownOptionByText(filterDropdownProxy, JOB_TYPE_NAME_BY_CODE[optionValue])
             }
             if (!optionElProxy) {
               continue;

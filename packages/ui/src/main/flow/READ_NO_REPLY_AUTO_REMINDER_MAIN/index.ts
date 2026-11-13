@@ -213,7 +213,19 @@ export const pageMapByName: {
 
 // periodPushCurrentPageScreenshot()
 
-export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<ChatListItem>) {
+export interface SaveChatRecordContext {
+  encryptJobId?: string
+  sessionId?: string
+  existingMids?: Set<string>
+  messageSource?: string
+  action?: string
+}
+
+export async function saveCurrentChatRecord(
+  page,
+  fallbackBossInfo?: Partial<ChatListItem>,
+  context?: SaveChatRecordContext
+) {
   try {
     const userInfo = await page.evaluate(
       'document.querySelector(".main-wrap")?.__vue__?.$store?.state?.userInfo'
@@ -303,6 +315,16 @@ export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<Cha
       return
     }
 
+    const resolvedEncryptJobId =
+      context?.encryptJobId ||
+      fallbackBossInfo?.encryptJobId ||
+      ((await page.evaluate(
+        `document.querySelector('.chat-conversation .chat-im.chat-editor')?.__vue__?.conversation$?.encryptJobId`
+      )) as string | undefined) ||
+      ''
+    const resolvedSessionId =
+      context?.sessionId || [bossInfo.encryptBossId, resolvedEncryptJobId].filter(Boolean).join(':')
+
     const chatRecordList = rawChatRecordList.map((it) => {
       const style = typeof it.isSelf === 'boolean' ? (it.isSelf ? 'sent' : 'received') : it.style
       const mappedItem = {} as InstanceType<typeof ChatMessageRecord>
@@ -324,6 +346,26 @@ export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<Cha
       const parsedTime = it.time ? new Date(it.time) : null
       mappedItem.time = parsedTime && !Number.isNaN(parsedTime.getTime()) ? parsedTime : null
       mappedItem.text = it.text ?? null
+      if (resolvedEncryptJobId) {
+        mappedItem.encryptJobId = resolvedEncryptJobId
+      }
+      if (resolvedSessionId) {
+        mappedItem.sessionId = resolvedSessionId
+      }
+      if (style === 'received') {
+        mappedItem.messageSource = 'hr'
+      } else if (
+        style === 'sent' &&
+        context?.existingMids &&
+        !context.existingMids.has(String(it.mid))
+      ) {
+        if (context.messageSource) {
+          mappedItem.messageSource = context.messageSource
+        }
+        if (context.action) {
+          mappedItem.action = context.action
+        }
+      }
       if (mappedItem.type === 'image' || it.messageType === 'image') {
         mappedItem.imageUrl = it.image?.originImage?.url
         mappedItem.imageHeight = it.image?.originImage?.height
@@ -825,6 +867,9 @@ const mainLoop = async () => {
 
     // 从数据库获取岗位原始 JD 信息并直接作为上下文
     const currentEncryptJobId = targetBoss.encryptJobId || conversationInfo?.encryptJobId
+    const sessionId = [targetBoss.encryptBossId, currentEncryptJobId].filter(Boolean).join(':')
+    const existingMids = new Set(historyMessageList.map((m) => String(m.mid ?? '')).filter(Boolean))
+    const sentContext: { messageSource?: string; action?: string } = {}
     let jobInfoRecord: JobInfo | null = null
     try {
       const ds = await dbInitPromise
@@ -971,12 +1016,16 @@ const mainLoop = async () => {
             if (replyResult.textToSend) {
               await sendMessage(pageMapByName.boss!, replyResult.textToSend)
             }
+            sentContext.messageSource = 'dynamic_chat_llm'
+            sentContext.action = 'send_resume'
             gtag('dynamic_chat_send_resume_executed')
           } else {
             console.warn('[dynamicChat] 工具栏发送简历未成功:', sendRes.error)
             // 发送失败兜底：拦截虚假“已发送”回复，改发缓兵回复并发送邮件报警
             const fallbackReply = '您好，收到您的要求！我稍后在手机端为您发送附件简历，请稍候查阅。'
             await sendMessage(pageMapByName.boss!, fallbackReply)
+            sentContext.messageSource = 'dynamic_chat_fallback'
+            sentContext.action = 'send_resume_fallback'
 
             const failEmailSubject = `【求职提醒】HR: ${targetBoss.name} 索要简历，自动发送未成功（需手机端手动发送）`
             const failEmailHtml = `
@@ -1090,6 +1139,8 @@ const mainLoop = async () => {
             })
           } else if (replyResult.textToSend?.trim()) {
             await sendMessage(pageMapByName.boss!, replyResult.textToSend)
+            sentContext.messageSource = 'dynamic_chat_llm'
+            sentContext.action = 'send_email'
           } else {
             console.log(
               `[dynamicChat] 转告邮件同时回复 HR 话术未配置或留空，仅在后台静默发送邮件通知本人`
@@ -1102,6 +1153,8 @@ const mainLoop = async () => {
         } else {
           console.log(`[dynamicChat] 发送拟人文本回复: ${replyResult.textToSend}`)
           await sendMessage(pageMapByName.boss!, replyResult.textToSend)
+          sentContext.messageSource = 'dynamic_chat_llm'
+          sentContext.action = 'send_text'
           gtag('dynamic_chat_text_sent')
         }
 
@@ -1157,15 +1210,21 @@ const mainLoop = async () => {
       if (!messageList?.length) {
         if (openContentSource === OPEN_CONTENT_SOURCE.CONSTANT_CONTENT) {
           await sendMessage(pageMapByName.boss!, constantOpenContent)
+          sentContext.messageSource = 'auto_reminder_template'
+          sentContext.action = 'send_open_content'
           gtag('rnrr_llm_content_sent')
         } else {
           try {
             const textToSend = await getGptContent(messageList, jobInfoText)
             await sendMessage(pageMapByName.boss!, textToSend)
+            sentContext.messageSource = 'auto_reminder_llm'
+            sentContext.action = 'send_follow_up'
             gtag('rnrr_llm_content_sent')
           } catch (err) {
             console.log(err)
             await sendMessage(pageMapByName.boss!, constantOpenContent)
+            sentContext.messageSource = 'auto_reminder_fallback'
+            sentContext.action = 'send_open_content'
             gtag('rnrr_look_forward_reply_emotion_sent', {
               fallback: true
             })
@@ -1176,11 +1235,15 @@ const mainLoop = async () => {
           try {
             const textToSend = await getGptContent(messageList, jobInfoText)
             await sendMessage(pageMapByName.boss!, textToSend)
+            sentContext.messageSource = 'auto_reminder_llm'
+            sentContext.action = 'send_follow_up'
             gtag('rnrr_llm_content_sent')
           } catch (err) {
             console.log(err)
             if (rechatLlmFallback === RECHAT_LLM_FALLBACK.SEND_LOOK_FORWARD_EMOTION) {
               await sendLookForwardReplyEmotion(pageMapByName.boss!)
+              sentContext.messageSource = 'auto_reminder_fallback'
+              sentContext.action = 'send_emotion'
               gtag('rnrr_look_forward_reply_emotion_sent', {
                 fallback: true
               })
@@ -1193,13 +1256,20 @@ const mainLoop = async () => {
           }
         } else {
           await sendLookForwardReplyEmotion(pageMapByName.boss!)
+          sentContext.messageSource = 'auto_reminder_emotion'
+          sentContext.action = 'send_emotion'
           gtag('rnrr_look_forward_reply_emotion_sent')
         }
       }
     }
     cursorToContinueFind = toCheckItemAtIndex + 1
     await sleep(1000)
-    await saveCurrentChatRecord(pageMapByName.boss!, targetBoss)
+    await saveCurrentChatRecord(pageMapByName.boss!, targetBoss, {
+      encryptJobId: currentEncryptJobId,
+      sessionId,
+      existingMids,
+      ...sentContext
+    })
     await sleep(3000)
   }
 }

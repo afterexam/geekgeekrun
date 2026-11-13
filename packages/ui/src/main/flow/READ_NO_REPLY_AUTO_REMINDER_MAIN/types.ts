@@ -40,6 +40,7 @@ export interface ChatListItem {
 }
 
 export interface ChatHistoryMessageItem {
+  mid?: string | number
   isSelf: boolean
   text?: string
   messageType?: string

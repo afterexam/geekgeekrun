@@ -46,4 +46,28 @@ export class ChatMessageRecord {
     nullable: true
   })
   imageHeight?: number;
+
+  @Column({
+    type: 'varchar',
+    nullable: true
+  })
+  encryptJobId?: string | null;
+
+  @Column({
+    type: 'varchar',
+    nullable: true
+  })
+  sessionId?: string | null;
+
+  @Column({
+    type: 'varchar',
+    nullable: true
+  })
+  messageSource?: string | null;
+
+  @Column({
+    type: 'varchar',
+    nullable: true
+  })
+  action?: string | null;
 }

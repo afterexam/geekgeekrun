@@ -236,6 +236,7 @@ export async function saveCurrentChatRecord(
       style?: string
       type?: string
       messageType?: string
+      bizType?: number
       time?: string | number
       text?: string
       image?: {
@@ -354,6 +355,8 @@ export async function saveCurrentChatRecord(
       }
       if (style === 'received') {
         mappedItem.messageSource = 'hr'
+      } else if (style === 'sent' && it.bizType === 101) {
+        mappedItem.messageSource = 'greeting_template'
       } else if (
         style === 'sent' &&
         context?.existingMids &&

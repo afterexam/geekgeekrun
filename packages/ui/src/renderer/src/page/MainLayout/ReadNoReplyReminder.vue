@@ -58,107 +58,42 @@
           <div w-full>
             <div>
               <el-checkbox v-model="formContent.autoReminder.enableUnrepliedFollowUp">
-                启用“已读不回自动跟进”（当向 HR 发送消息后，HR 处于已读未回复状态时，自动定时跟进提醒）
+                启用“已读不回自动跟进”（当向 HR 发送消息后，HR
+                处于已读未回复状态时，自动定时跟进提醒）
               </el-checkbox>
             </div>
           </div>
         </el-form-item>
         <template v-if="formContent.autoReminder.enableUnrepliedFollowUp">
-        <el-form-item label="开场白话术">
-          <el-radio-group v-model="formContent.autoReminder.openContentSource" w-full>
-            <div w-full>
-              <el-radio :label="OPEN_CONTENT_SOURCE.CONSTANT_CONTENT"> 固定文案 </el-radio>
-              <el-input
-                v-if="
-                  formContent.autoReminder.openContentSource ===
-                  OPEN_CONTENT_SOURCE.CONSTANT_CONTENT
-                "
-                v-model="formContent.autoReminder.constantOpenContent"
-                w-full
-                :autosize="{ minRows: 3 }"
-                max-h-8lh
-                type="textarea"
-                :placeholder="defaultConstantOpenContent"
-                class="pl-30px mb10px"
-                :style="{
-                  boxSizing: 'border-box'
-                }"
-              />
-            </div>
-            <div>
-              <el-radio :label="OPEN_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT">
-                由大语言模型生成的内容
-              </el-radio>
-              <div
-                v-if="
-                  formContent.autoReminder.openContentSource ===
-                  OPEN_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT
-                "
-                ml30px
-              >
-                <el-form-item class="mb4px">
-                  <div>
-                    <div>
-                      <el-button
-                        size="small"
-                        type="primary"
-                        @click="
-                          handleClickEditPrompt({
-                            type: 'open'
-                          })
-                        "
-                      >
-                        使用外部编辑器编辑“开场白话术”提示词模板 (Markdown)
-                      </el-button>
-                      <el-button
-                        size="small"
-                        type="primary"
-                        @click="
-                          () => {
-                            restoreDefaultTemplate({
-                              type: 'open',
-                              gaEvName: 'reset_template_clicked_in_main_form'
-                            })
-                          }
-                        "
-                      >
-                        还原默认“开场白话术”提示词模板
-                      </el-button>
-                    </div>
-                    <div class="font-size-12px color-#666">
-                      对生成效果不够满意？可在此查看、编辑“开场白话术”提示词模板。
-                    </div>
-                  </div>
-                </el-form-item>
+          <el-form-item label="开场白话术">
+            <el-radio-group v-model="formContent.autoReminder.openContentSource" w-full>
+              <div w-full>
+                <el-radio :label="OPEN_CONTENT_SOURCE.CONSTANT_CONTENT"> 固定文案 </el-radio>
+                <el-input
+                  v-if="
+                    formContent.autoReminder.openContentSource ===
+                    OPEN_CONTENT_SOURCE.CONSTANT_CONTENT
+                  "
+                  v-model="formContent.autoReminder.constantOpenContent"
+                  w-full
+                  :autosize="{ minRows: 3 }"
+                  max-h-8lh
+                  type="textarea"
+                  :placeholder="defaultConstantOpenContent"
+                  class="pl-30px mb10px"
+                  :style="{
+                    boxSizing: 'border-box'
+                  }"
+                />
               </div>
-            </div>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="跟进话术 - 当发现已读不回的BOSS时，将要向BOSS发出：">
-          <el-radio-group v-model="formContent.autoReminder.rechatContentSource">
-            <div>
-              <el-tooltip
-                effect="light"
-                placement="right"
-                :enterable="false"
-                @show="gtagRenderer('tooltip_show_about_lfr_emotion_figure')"
-              >
-                <template #content>
-                  <img block h-100px src="./resources/look-forward-reply-emotion.gif" />
-                </template>
-                <el-radio :label="RECHAT_CONTENT_SOURCE.LOOK_FORWARD_EMOTION">
-                  “[盼回复]” 表情
-                </el-radio>
-              </el-tooltip>
-              <br />
               <div>
-                <el-radio :label="RECHAT_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT">
-                  由大语言模型（根据简历及当前聊天上下文）生成的内容
+                <el-radio :label="OPEN_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT">
+                  由大语言模型生成的内容
                 </el-radio>
                 <div
                   v-if="
-                    formContent.autoReminder.rechatContentSource ===
-                    RECHAT_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT
+                    formContent.autoReminder.openContentSource ===
+                    OPEN_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT
                   "
                   ml30px
                 >
@@ -170,11 +105,11 @@
                           type="primary"
                           @click="
                             handleClickEditPrompt({
-                              type: 'rechat'
+                              type: 'open'
                             })
                           "
                         >
-                          使用外部编辑器编辑“跟进话术”提示词模板 (Markdown)
+                          使用外部编辑器编辑“开场白话术”提示词模板 (Markdown)
                         </el-button>
                         <el-button
                           size="small"
@@ -182,26 +117,92 @@
                           @click="
                             () => {
                               restoreDefaultTemplate({
-                                type: 'rechat',
+                                type: 'open',
                                 gaEvName: 'reset_template_clicked_in_main_form'
                               })
                             }
                           "
                         >
-                          还原默认“跟进话术”提示词模板
+                          还原默认“开场白话术”提示词模板
                         </el-button>
                       </div>
                       <div class="font-size-12px color-#666">
-                        对生成效果不够满意？可在此查看、编辑“跟进话术”提示词模板。请在模板中需要插入简历的位置插入
-                        __REPLACE_REAL_RESUME_HERE__
+                        对生成效果不够满意？可在此查看、编辑“开场白话术”提示词模板。
                       </div>
                     </div>
                   </el-form-item>
                 </div>
               </div>
-            </div>
-          </el-radio-group>
-        </el-form-item>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="跟进话术 - 当发现已读不回的BOSS时，将要向BOSS发出：">
+            <el-radio-group v-model="formContent.autoReminder.rechatContentSource">
+              <div>
+                <el-tooltip
+                  effect="light"
+                  placement="right"
+                  :enterable="false"
+                  @show="gtagRenderer('tooltip_show_about_lfr_emotion_figure')"
+                >
+                  <template #content>
+                    <img block h-100px src="./resources/look-forward-reply-emotion.gif" />
+                  </template>
+                  <el-radio :label="RECHAT_CONTENT_SOURCE.LOOK_FORWARD_EMOTION">
+                    “[盼回复]” 表情
+                  </el-radio>
+                </el-tooltip>
+                <br />
+                <div>
+                  <el-radio :label="RECHAT_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT">
+                    由大语言模型（根据简历及当前聊天上下文）生成的内容
+                  </el-radio>
+                  <div
+                    v-if="
+                      formContent.autoReminder.rechatContentSource ===
+                      RECHAT_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT
+                    "
+                    ml30px
+                  >
+                    <el-form-item class="mb4px">
+                      <div>
+                        <div>
+                          <el-button
+                            size="small"
+                            type="primary"
+                            @click="
+                              handleClickEditPrompt({
+                                type: 'rechat'
+                              })
+                            "
+                          >
+                            使用外部编辑器编辑“跟进话术”提示词模板 (Markdown)
+                          </el-button>
+                          <el-button
+                            size="small"
+                            type="primary"
+                            @click="
+                              () => {
+                                restoreDefaultTemplate({
+                                  type: 'rechat',
+                                  gaEvName: 'reset_template_clicked_in_main_form'
+                                })
+                              }
+                            "
+                          >
+                            还原默认“跟进话术”提示词模板
+                          </el-button>
+                        </div>
+                        <div class="font-size-12px color-#666">
+                          对生成效果不够满意？可在此查看、编辑“跟进话术”提示词模板。请在模板中需要插入简历的位置插入
+                          __REPLACE_REAL_RESUME_HERE__
+                        </div>
+                      </div>
+                    </el-form-item>
+                  </div>
+                </div>
+              </div>
+            </el-radio-group>
+          </el-form-item>
         </template>
         <el-form-item label="HR 回复后动态多轮对话与智能跟进">
           <div w-full>
@@ -211,7 +212,10 @@
               </el-checkbox>
             </div>
             <div v-if="formContent.autoReminder.enableDynamicChatWithHr" ml30px mt8px>
-              <el-form-item class="mb8px" label="单会话最大自动回复轮数（达到上限后转为人工接管）：">
+              <el-form-item
+                class="mb8px"
+                label="单会话最大自动回复轮数（达到上限后转为人工接管）："
+              >
                 <el-input-number
                   v-model="formContent.autoReminder.maxDynamicChatTurns"
                   class="w-120px"
@@ -233,13 +237,19 @@
               </el-form-item>
               <el-form-item class="mb8px">
                 <el-checkbox v-model="formContent.autoReminder.enableLlmDoNothing">
-                  允许大语言模型在对话自然闭环（如 HR 仅回复“好的”、“收到”等）时选择不回复（保持静默）
+                  允许大语言模型在对话自然闭环（如 HR
+                  仅回复“好的”、“收到”等）时选择不回复（保持静默）
                 </el-checkbox>
                 <div ml1.5em color-gray font-size-12px>
-                  若开启，遇到无需继续追问的闭环消息时大模型将保持静默；若关闭，大模型将始终礼貌回复直到达到最大轮数上限或 HR 不再发消息
+                  若开启，遇到无需继续追问的闭环消息时大模型将保持静默；若关闭，大模型将始终礼貌回复直到达到最大轮数上限或
+                  HR 不再发消息
                 </div>
               </el-form-item>
-              <el-form-item v-if="formContent.autoReminder.enableEmailForwardTool" class="mb8px" label="邮件接收邮箱：">
+              <el-form-item
+                v-if="formContent.autoReminder.enableEmailForwardTool"
+                class="mb8px"
+                label="邮件接收邮箱："
+              >
                 <el-input
                   v-model="formContent.autoReminder.notifyEmail"
                   class="w-260px"
@@ -247,7 +257,11 @@
                   clearable
                 />
               </el-form-item>
-              <el-form-item v-if="formContent.autoReminder.enableEmailForwardTool" class="mb8px" label="SMTP 授权码：">
+              <el-form-item
+                v-if="formContent.autoReminder.enableEmailForwardTool"
+                class="mb8px"
+                label="SMTP 授权码："
+              >
                 <el-input
                   v-model="formContent.autoReminder.smtpPass"
                   class="w-260px"
@@ -260,7 +274,11 @@
                   用于发信服务。留空则优先从根目录 .env 中的 SMTP_PASS 读取
                 </div>
               </el-form-item>
-              <el-form-item v-if="formContent.autoReminder.enableEmailForwardTool" class="mb8px" label="转告同时回复 HR 话术：">
+              <el-form-item
+                v-if="formContent.autoReminder.enableEmailForwardTool"
+                class="mb8px"
+                label="转告同时回复 HR 话术："
+              >
                 <el-input
                   v-model="formContent.autoReminder.emailForwardReplyMessage"
                   class="w-400px"
@@ -299,7 +317,8 @@
                     </el-button>
                   </div>
                   <div class="font-size-12px color-#666">
-                    大模型将基于此模板与 HR 拟人化沟通。提示词模板中包含 __REPLACE_REAL_RESUME_HERE__ 简历占位符。
+                    大模型将基于此模板与 HR 拟人化沟通。提示词模板中包含
+                    __REPLACE_REAL_RESUME_HERE__ 简历占位符。
                   </div>
                 </div>
               </el-form-item>
@@ -738,7 +757,9 @@ async function checkIsCanRun() {
 
   if (formContent.value.autoReminder?.enableDynamicChatWithHr) {
     try {
-      await electron.ipcRenderer.invoke('check-if-auto-remind-prompt-valid', { type: 'dynamicChat' })
+      await electron.ipcRenderer.invoke('check-if-auto-remind-prompt-valid', {
+        type: 'dynamicChat'
+      })
     } catch (err) {
       console.log(err)
       if (err?.message?.includes(`RESUME_PLACEHOLDER_NOT_EXIST`)) {
@@ -804,10 +825,13 @@ const handleSubmit = async () => {
       formContent.value.autoReminder.onlyRemindBossWithoutBlockCompanyName,
     rechat_llm_fallback: formContent.value.autoReminder.rechatLlmFallback,
     open_content_source: formContent.value.autoReminder.openContentSource,
-    constant_open_content_text_length: formContent.value.autoReminder.constantOpenContent.length ?? 0,
+    constant_open_content_text_length:
+      formContent.value.autoReminder.constantOpenContent.length ?? 0,
     enable_dynamic_chat_with_hr: formContent.value.autoReminder.enableDynamicChatWithHr,
     max_dynamic_chat_turns: formContent.value.autoReminder.maxDynamicChatTurns,
-    enable_llm_send_resume_tool: formContent.value.autoReminder.enableLlmSendResumeTool
+    enable_llm_send_resume_tool: formContent.value.autoReminder.enableLlmSendResumeTool,
+    enable_email_forward_tool: formContent.value.autoReminder.enableEmailForwardTool,
+    enable_llm_do_nothing: formContent.value.autoReminder.enableLlmDoNothing
   })
   await formRef.value!.validate()
   await electron.ipcRenderer.invoke('save-config-file-from-ui', JSON.stringify(formContent.value))

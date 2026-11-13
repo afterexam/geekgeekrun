@@ -1,5 +1,11 @@
 import { bootstrap, launchBoss } from './bootstrap'
-import { MsgStatus, type ChatListItem } from './types'
+import {
+  MsgStatus,
+  type ChatHistoryMessageItem,
+  type ChatListItem,
+  type ConversationInfo,
+  type SelectedFriendInfo
+} from './types'
 import { Browser, Page } from 'puppeteer'
 import {
   getGptContent,
@@ -212,10 +218,31 @@ export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<Cha
     const userInfo = await page.evaluate(
       'document.querySelector(".main-wrap")?.__vue__?.$store?.state?.userInfo'
     )
-    const pageBossInfo = await page.evaluate(() => {
-      const b = (document.querySelector('.chat-conversation .chat-record') as any)?.__vue__?.boss
+    interface RawChatRecordItem {
+      mid?: string | number
+      isSelf?: boolean
+      style?: string
+      type?: string
+      messageType?: string
+      time?: string | number
+      text?: string
+      image?: {
+        originImage?: { url?: string; width?: number; height?: number }
+        tinyImage?: { url?: string; width?: number; height?: number }
+      }
+    }
+    const pageBossInfo: Partial<ChatListItem> | null = await page.evaluate(() => {
+      const b = (
+        document.querySelector('.chat-conversation .chat-record') as
+          | (Element & { __vue__?: { boss?: Partial<ChatListItem> } })
+          | null
+      )?.__vue__?.boss
       if (b?.encryptBossId) return b
-      const s = (document.querySelector('.chat-conversation') as any)?.__vue__?.selectedFriend$
+      const s = (
+        document.querySelector('.chat-conversation') as
+          | (Element & { __vue__?: { selectedFriend$?: Partial<ChatListItem> } })
+          | null
+      )?.__vue__?.selectedFriend$
       return s?.encryptBossId ? s : null
     })
     const bossInfo = pageBossInfo || fallbackBossInfo
@@ -238,7 +265,7 @@ export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<Cha
         name: bossInfo.name ?? fallbackBossInfo?.name ?? '',
         title:
           bossInfo.title ??
-          (bossInfo as any).sourceTitle ??
+          bossInfo.sourceTitle ??
           fallbackBossInfo?.title ??
           fallbackBossInfo?.sourceTitle ??
           '',
@@ -247,21 +274,29 @@ export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<Cha
       await bossInfoRepository.save(targetBossInfo)
     }
 
-    const rawChatState = (await page.evaluate(() => {
-      const vm = (document.querySelector('.message-content .chat-record') as any)?.__vue__
-      if (Array.isArray(vm?.list$)) {
-        return { source: 'list$', items: vm.list$ }
+    const rawChatState: { source: string; items: RawChatRecordItem[] } = (await page.evaluate(
+      () => {
+        const vm = (
+          document.querySelector('.message-content .chat-record') as
+            | (Element & {
+                __vue__?: { list$?: RawChatRecordItem[]; records$?: RawChatRecordItem[] }
+              })
+            | null
+        )?.__vue__
+        if (Array.isArray(vm?.list$)) {
+          return { source: 'list$', items: vm.list$ }
+        }
+        if (Array.isArray(vm?.records$)) {
+          return { source: 'records$', items: vm.records$ }
+        }
+        return { source: 'none', items: [] }
       }
-      if (Array.isArray(vm?.records$)) {
-        return { source: 'records$', items: vm.records$ }
-      }
-      return { source: 'none', items: [] }
-    })) ?? { source: 'none', items: [] }
+    )) ?? { source: 'none', items: [] }
 
     const rawChatRecordList = (
       rawChatState.source === 'list$'
         ? rawChatState.items.filter(messageForSaveFilter)
-        : rawChatState.items.filter((msg) => ['received', 'sent'].includes(msg?.style))
+        : rawChatState.items.filter((msg) => ['received', 'sent'].includes(msg?.style ?? ''))
     ).filter((it) => it?.mid != null && it?.mid !== '')
 
     if (!rawChatRecordList.length) {
@@ -269,8 +304,7 @@ export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<Cha
     }
 
     const chatRecordList = rawChatRecordList.map((it) => {
-      const style =
-        typeof it.isSelf === 'boolean' ? (it.isSelf ? 'sent' : 'received') : it.style
+      const style = typeof it.isSelf === 'boolean' ? (it.isSelf ? 'sent' : 'received') : it.style
       const mappedItem = {} as InstanceType<typeof ChatMessageRecord>
       mappedItem.mid = it.mid
       mappedItem.encryptFromUserId =
@@ -288,15 +322,12 @@ export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<Cha
       mappedItem.style = style
       mappedItem.type = it.type ?? it.messageType
       const parsedTime = it.time ? new Date(it.time) : null
-      mappedItem.time =
-        parsedTime && !Number.isNaN(parsedTime.getTime()) ? parsedTime : null
+      mappedItem.time = parsedTime && !Number.isNaN(parsedTime.getTime()) ? parsedTime : null
       mappedItem.text = it.text ?? null
       if (mappedItem.type === 'image' || it.messageType === 'image') {
         mappedItem.imageUrl = it.image?.originImage?.url
-        mappedItem.imageHeight =
-          it.image?.originImage?.height ?? it.image?.originImage?.url?.height
-        mappedItem.imageWidth =
-          it.image?.originImage?.width ?? it.image?.originImage?.url?.width
+        mappedItem.imageHeight = it.image?.originImage?.height
+        mappedItem.imageWidth = it.image?.originImage?.width
       }
 
       return mappedItem
@@ -609,7 +640,12 @@ const mainLoop = async () => {
     const enableLlmSendResumeTool = bossConf.enableLlmSendResumeTool ?? true
     const enableEmailForwardTool = bossConf.enableEmailForwardTool ?? false
     const enableLlmDoNothing = bossConf.enableLlmDoNothing ?? true
-    const notifyEmail = process.env.NOTIFY_EMAIL || bossConf.notifyEmail || process.env.SMTP_USER || bossConf.smtpUser || ''
+    const notifyEmail =
+      process.env.NOTIFY_EMAIL ||
+      bossConf.notifyEmail ||
+      process.env.SMTP_USER ||
+      bossConf.smtpUser ||
+      ''
     const emailForwardReplyMessage = bossConf.emailForwardReplyMessage ?? ''
 
     await pageMapByName.boss?.waitForFunction(() => {
@@ -655,9 +691,7 @@ const mainLoop = async () => {
       const currentTurns = state?.turnCount || 0
       const itemMsgKey = getBossLastMsgKey(it)
       const isAlreadyHandled =
-        Boolean(itemMsgKey) &&
-        state?.lastHandledMsgKey === itemMsgKey &&
-        !it.unreadCount
+        Boolean(itemMsgKey) && state?.lastHandledMsgKey === itemMsgKey && !it.unreadCount
       const isHrReplied =
         enableDynamicChatWithHr &&
         currentTurns < maxDynamicChatTurns &&
@@ -678,7 +712,7 @@ const mainLoop = async () => {
         // go back to first job
         cursorToContinueFind = 0
         await pageMapByName.boss?.evaluate(() => {
-          ; (() => {
+          ;(() => {
             document
               .querySelector('.chat-content .user-list .user-list-content')
               ?.__vue__.scrollToIndex(0)
@@ -688,7 +722,7 @@ const mainLoop = async () => {
       } else {
         cursorToContinueFind = friendListData.length - 1
         await pageMapByName.boss?.evaluate(() => {
-          ; (() => {
+          ;(() => {
             document
               .querySelector('.chat-content .user-list .user-list-content')
               ?.__vue__.scrollToBottom()
@@ -700,7 +734,7 @@ const mainLoop = async () => {
     } else {
       cursorToContinueFind = toCheckItemAtIndex
       await pageMapByName.boss?.evaluate((toCheckItemAtIndex) => {
-        ; (() => {
+        ;(() => {
           document
             .querySelector('.chat-content .user-list .user-list-content')
             ?.__vue__.scrollToIndex(toCheckItemAtIndex)
@@ -731,9 +765,9 @@ const mainLoop = async () => {
     }
     await sleepWithRandomDelay(1500)
     // 获取当前会话头部选中的招聘者与职位元数据
-    const selectedFriendInfo = await pageMapByName.boss?.evaluate(
+    const selectedFriendInfo = (await pageMapByName.boss?.evaluate(
       `document.querySelector('.chat-conversation')?.__vue__?.selectedFriend$`
-    )
+    )) as SelectedFriendInfo | undefined
 
     // check if expect job type match
     let isExpectJobTypeMatch = true
@@ -750,15 +784,21 @@ const mainLoop = async () => {
         }
       }
     }
-    const conversationInfo = await pageMapByName.boss?.evaluate(
+    const conversationInfo = (await pageMapByName.boss?.evaluate(
       `document.querySelector('.chat-conversation .chat-im.chat-editor')?.__vue__?.conversation$`
-    )
+    )) as ConversationInfo | undefined
 
-    const historyMessageList =
+    const historyMessageList: ChatHistoryMessageItem[] =
       (
-        await pageMapByName.boss?.evaluate(() => {
-          return document.querySelector('.message-content .chat-record')?.__vue__?.list$ ?? []
-        })
+        (await pageMapByName.boss?.evaluate(() => {
+          return (
+            (
+              document.querySelector('.message-content .chat-record') as
+                | (Element & { __vue__?: { list$?: ChatHistoryMessageItem[] } })
+                | null
+            )?.__vue__?.list$ ?? []
+          )
+        })) as ChatHistoryMessageItem[] | undefined
       )?.filter(messageForSaveFilter) ?? []
 
     const lastGeekMessageSendTime = historyMessageList.findLast((it) => it.isSelf)?.time ?? 0
@@ -789,7 +829,9 @@ const mainLoop = async () => {
     try {
       const ds = await dbInitPromise
       if (currentEncryptJobId && ds) {
-        jobInfoRecord = await ds.getRepository(JobInfo).findOne({ where: { encryptJobId: currentEncryptJobId } })
+        jobInfoRecord = await ds
+          .getRepository(JobInfo)
+          .findOne({ where: { encryptJobId: currentEncryptJobId } })
       }
     } catch (e) {
       console.warn('[jobContext] 查询岗位详情异常:', e)
@@ -799,7 +841,9 @@ const mainLoop = async () => {
     const headerJobDetail = await pageMapByName.boss?.evaluate(() => {
       const leftContentEl =
         document.querySelector('.chat-conversation .left-content') ||
-        document.querySelector('#main .chat-conversation [ka="geek_chat_job_detail"] .left-content') ||
+        document.querySelector(
+          '#main .chat-conversation [ka="geek_chat_job_detail"] .left-content'
+        ) ||
         document.querySelector('[ka="geek_chat_job_detail"]')
 
       let positionFromDom = ''
@@ -812,7 +856,9 @@ const mainLoop = async () => {
           positionFromDom = (positionEl as HTMLElement).innerText?.trim() || ''
         }
 
-        const salaryEl = leftContentEl.querySelector('.salary, [class*="salary"], .badge-salary, .job-salary, .red')
+        const salaryEl = leftContentEl.querySelector(
+          '.salary, [class*="salary"], .badge-salary, .job-salary, .red'
+        )
         if (salaryEl) {
           salaryFromDom = (salaryEl as HTMLElement).innerText?.trim() || ''
         }
@@ -825,7 +871,9 @@ const mainLoop = async () => {
         // 若直接选择器未命中，使用正则做兜底提取
         const rawText = (leftContentEl as HTMLElement).innerText || ''
         if (!salaryFromDom) {
-          const m = rawText.match(/\d+[ \s-–~至]+\d+\s*(?:K|k|元|万|元\/天|元\/月|\/天|\/月)(?:[·*]?\s*\d+薪)?/)
+          const m = rawText.match(
+            /\d+[ \s-–~至]+\d+\s*(?:K|k|元|万|元\/天|元\/月|\/天|\/月)(?:[·*]?\s*\d+薪)?/
+          )
           if (m) salaryFromDom = m[0].trim()
         }
       }
@@ -846,35 +894,24 @@ const mainLoop = async () => {
       targetBoss.sourceTitle ||
       ''
 
-    const companyName =
-      targetBoss.brandName ||
-      selectedFriendInfo?.brandName ||
-      ''
+    const companyName = targetBoss.brandName || selectedFriendInfo?.brandName || ''
 
     let salaryDesc = ''
     if (jobInfoRecord?.salaryLow && jobInfoRecord?.salaryHigh) {
-      salaryDesc = `${jobInfoRecord.salaryLow}-${jobInfoRecord.salaryHigh}K${jobInfoRecord.salaryMonth ? `·${jobInfoRecord.salaryMonth}薪` : ''
-        }`
+      salaryDesc = `${jobInfoRecord.salaryLow}-${jobInfoRecord.salaryHigh}K${
+        jobInfoRecord.salaryMonth ? `·${jobInfoRecord.salaryMonth}薪` : ''
+      }`
     }
     if (!salaryDesc) {
       salaryDesc = headerJobDetail?.salaryDesc || selectedFriendInfo?.salaryDesc || ''
     }
 
     const cityName =
-      jobInfoRecord?.address ||
-      headerJobDetail?.cityName ||
-      selectedFriendInfo?.cityName ||
-      ''
+      jobInfoRecord?.address || headerJobDetail?.cityName || selectedFriendInfo?.cityName || ''
 
-    const degreeName =
-      jobInfoRecord?.degreeName ||
-      selectedFriendInfo?.degreeName ||
-      ''
+    const degreeName = jobInfoRecord?.degreeName || selectedFriendInfo?.degreeName || ''
 
-    const experienceName =
-      jobInfoRecord?.experienceName ||
-      selectedFriendInfo?.experienceName ||
-      ''
+    const experienceName = jobInfoRecord?.experienceName || selectedFriendInfo?.experienceName || ''
 
     const metaLines = [
       positionName ? `【职位名称】：${positionName}` : '',
@@ -883,7 +920,9 @@ const mainLoop = async () => {
       cityName ? `【工作地点】：${cityName}` : '',
       degreeName ? `【要求学历】：${degreeName}` : '',
       experienceName ? `【经验要求】：${experienceName}` : ''
-    ].filter(Boolean).join('\n')
+    ]
+      .filter(Boolean)
+      .join('\n')
 
     const detailedJd = jobInfoRecord?.description?.trim()
     const jobInfoText = detailedJd
@@ -922,7 +961,9 @@ const mainLoop = async () => {
         let shouldPersistHandledTurn = true
 
         if (enableLlmSendResumeTool && replyResult.action === 'send_resume') {
-          console.log(`[dynamicChat] 大模型决定通过工具栏主动发送简历 (原因: ${replyResult.reason})`)
+          console.log(
+            `[dynamicChat] 大模型决定通过工具栏主动发送简历 (原因: ${replyResult.reason})`
+          )
           const sendRes = await sendResumeViaToolbar(pageMapByName.boss!)
           if (sendRes.success) {
             console.log('[dynamicChat] 简历已成功通过工具栏发送')
@@ -953,7 +994,9 @@ const mainLoop = async () => {
             }).catch((err) => console.error('[dynamicChat] 简历失败报警邮件发送异常:', err))
           }
         } else if (enableEmailForwardTool && replyResult.action === 'send_email') {
-          console.log(`[dynamicChat] 大模型决定调用邮件工具转告候选人 (原因: ${replyResult.reason})`)
+          console.log(
+            `[dynamicChat] 大模型决定调用邮件工具转告候选人 (原因: ${replyResult.reason})`
+          )
 
           let emailSentOrAlreadyNotified = false
           if (lastMsgKey && existingState?.lastNotifiedMsgKey === lastMsgKey) {
@@ -965,13 +1008,21 @@ const mainLoop = async () => {
             const reasonText = replyResult.reason || '提出了新要求'
             const emailSubject = `【${company}】${reasonText}`
 
-            const recentChatHtml = historyMessageList.slice(-10).map((it) => {
-              const isSys = (it as any).isSystem || it.messageType === 'dialog' || it.messageType === 'system'
-              const sender = isSys ? '【系统卡片】' : (it.isSelf ? '【候选人/Agent】' : `【HR ${targetBoss.name}】`)
-              const bg = isSys ? '#fffbeb' : (it.isSelf ? '#f0f9ff' : '#f8f9fa')
-              const color = isSys ? '#b45309' : (it.isSelf ? '#0284c7' : '#334155')
-              return `<div style="background:${bg};padding:8px 12px;border-radius:6px;margin-bottom:6px;font-size:13px;"><strong style="color:${color};">${sender}：</strong>${(it.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
-            }).join('')
+            const recentChatHtml = historyMessageList
+              .slice(-10)
+              .map((it) => {
+                const isSys =
+                  it.isSystem || it.messageType === 'dialog' || it.messageType === 'system'
+                const sender = isSys
+                  ? '【系统卡片】'
+                  : it.isSelf
+                    ? '【候选人/Agent】'
+                    : `【HR ${targetBoss.name}】`
+                const bg = isSys ? '#fffbeb' : it.isSelf ? '#f0f9ff' : '#f8f9fa'
+                const color = isSys ? '#b45309' : it.isSelf ? '#0284c7' : '#334155'
+                return `<div style="background:${bg};padding:8px 12px;border-radius:6px;margin-bottom:6px;font-size:13px;"><strong style="color:${color};">${sender}：</strong>${(it.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
+              })
+              .join('')
 
             const jdHtml = jobInfoText?.trim()
               ? `<div style="margin-top: 20px; background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #2563eb; border-radius: 6px; padding: 12px 16px;">
@@ -1023,7 +1074,10 @@ const mainLoop = async () => {
                 )
               }
             } catch (err) {
-              console.error('[dynamicChat] 邮件发送异常，暂不回复 HR 且不标记消息为已处理以便后续重试:', err)
+              console.error(
+                '[dynamicChat] 邮件发送异常，暂不回复 HR 且不标记消息为已处理以便后续重试:',
+                err
+              )
             }
           }
 
@@ -1037,7 +1091,9 @@ const mainLoop = async () => {
           } else if (replyResult.textToSend?.trim()) {
             await sendMessage(pageMapByName.boss!, replyResult.textToSend)
           } else {
-            console.log(`[dynamicChat] 转告邮件同时回复 HR 话术未配置或留空，仅在后台静默发送邮件通知本人`)
+            console.log(
+              `[dynamicChat] 转告邮件同时回复 HR 话术未配置或留空，仅在后台静默发送邮件通知本人`
+            )
           }
         } else if (replyResult.action === 'send_resume' || replyResult.action === 'send_email') {
           console.warn(`[dynamicChat] 工具 ${replyResult.action} 当前未开启，跳过执行`)
@@ -1074,7 +1130,7 @@ const mainLoop = async () => {
           })
           await markDynamicChatHandedOverIfNeeded(targetBoss, nextTurns, maxDynamicChatTurns)
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error('[dynamicChat] 动态回复异常:', err)
       }
     }
@@ -1092,7 +1148,7 @@ const mainLoop = async () => {
         !hasHrReplied) &&
       // don't disturb too much
       Date.now() - lastGeekMessageSendTime >=
-      (throttleIntervalMinutes + 4 * Math.random()) * 60 * 1000
+        (throttleIntervalMinutes + 4 * Math.random()) * 60 * 1000
     ) {
       await sleepWithRandomDelay(3250)
       const messageList = historyMessageList

@@ -12,6 +12,7 @@ import { SINGLE_ITEM_DEFAULT_SERVE_WEIGHT } from '../../../common/constant'
 import tls from 'node:tls'
 import { LlmModelUsageRecord } from '@geekgeekrun/sqlite-plugin/dist/entity/LlmModelUsageRecord'
 import gtag from '../../utils/gtag'
+import { type ChatHistoryMessageItem } from './types'
 
 export const sendLookForwardReplyEmotion = async (page: Page) => {
   const emotionEntryButtonProxy = await page.$('.chat-conversation .message-controls .btn-emotion')
@@ -28,16 +29,60 @@ export const sendLookForwardReplyEmotion = async (page: Page) => {
   await lookForwardReplyEmojiProxy!.click()
 }
 
-const pickLlmConfigFromList = (llmConfigList, blockModelSet) => {
+export interface LlmConfigItem {
+  id: string
+  providerCompleteApiUrl: string
+  providerApiSecret: string
+  model: string
+  serveWeight: number
+  enabled: boolean
+}
+
+export interface LlmToolCall {
+  function?: {
+    name?: string
+    arguments?: string
+  }
+}
+
+export interface LlmChoiceMessage {
+  content?: string | null
+  tool_calls?: LlmToolCall[]
+}
+
+interface LlmCompletionChoice {
+  message?: LlmChoiceMessage
+}
+
+export interface LlmToolDefinition {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+type LlmUsageRecordPayload = Partial<Omit<LlmModelUsageRecord, 'id' | 'providerApiSecretMd5'>> & {
+  providerApiSecret?: string
+}
+
+const getErrorMessage = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err ?? '')
+
+const pickLlmConfigFromList = (
+  llmConfigList: LlmConfigItem[],
+  blockModelSet: Set<string>
+): LlmConfigItem | null => {
   if (llmConfigList.length === 1) {
     llmConfigList[0].enabled = true
     llmConfigList[0].serveWeight = SINGLE_ITEM_DEFAULT_SERVE_WEIGHT
   }
-  llmConfigList = llmConfigList.filter((it) => it.enabled && !blockModelSet.has(it.id))
-  if (!llmConfigList.length) {
+  const enabledList = llmConfigList.filter((it) => it.enabled && !blockModelSet.has(it.id))
+  if (!enabledList.length) {
     return null
   }
-  llmConfigList.forEach((conf) => {
+  enabledList.forEach((conf) => {
     if (!Number(conf.serveWeight) || conf.serveWeight < 1) {
       conf.serveWeight = 1
     }
@@ -45,17 +90,106 @@ const pickLlmConfigFromList = (llmConfigList, blockModelSet) => {
       conf.serveWeight = 100
     }
   })
-  const pool: number[] = []
-  for (let i = 0; i < llmConfigList.length; i++) {
-    for (let j = 0; j < Math.floor(llmConfigList[i].serveWeight); j++) {
-      pool.push(llmConfigList[i].id)
+  const pool: string[] = []
+  for (let i = 0; i < enabledList.length; i++) {
+    for (let j = 0; j < Math.floor(enabledList[i].serveWeight); j++) {
+      pool.push(enabledList[i].id)
     }
   }
   if (!pool.length) {
     return null
   }
   const index = Math.floor(pool.length * Math.random())
-  return llmConfigList.find((it) => it.id === pool[index]) ?? null
+  return enabledList.find((it) => it.id === pool[index]) ?? null
+}
+
+async function requestChatCompletionWithFallback({
+  chatList,
+  requestScene,
+  llmConfigIdForPick,
+  tools,
+  logPrefix = ''
+}: {
+  chatList: Array<{ role: string; content: string }>
+  requestScene?: RequestSceneEnum
+  llmConfigIdForPick?: string[]
+  tools?: LlmToolDefinition[]
+  logPrefix?: string
+}): Promise<{
+  choice: LlmCompletionChoice
+  llmConfig: LlmConfigItem
+  llmRequestRecord: LlmUsageRecordPayload
+}> {
+  let choice: LlmCompletionChoice | null = null
+  let llmConfig: LlmConfigItem | null = null
+  const llmRequestRecord: LlmUsageRecordPayload = {}
+  const blockModelSet = new Set<string>()
+
+  while (!choice) {
+    let llmConfigList = (await readConfigFile('llm.json')) as LlmConfigItem[]
+    if (llmConfigIdForPick?.length) {
+      llmConfigList = llmConfigList.filter((it) => llmConfigIdForPick.includes(it.id))
+    }
+    llmConfig = pickLlmConfigFromList(llmConfigList, blockModelSet)
+    if (!llmConfig) {
+      throw new Error(`CANNOT_FIND_A_USABLE_MODEL`)
+    }
+
+    if (!logPrefix) {
+      console.log(llmConfig.providerCompleteApiUrl)
+    }
+    Object.assign(llmRequestRecord, {
+      providerCompleteApiUrl: llmConfig.providerCompleteApiUrl,
+      model: llmConfig.model,
+      providerApiSecret: llmConfig.providerApiSecret,
+      requestStartTime: new Date(),
+      hasError: false,
+      errorMessage: '',
+      requestScene
+    })
+
+    try {
+      const completion = await completes(
+        {
+          baseURL: llmConfig.providerCompleteApiUrl,
+          apiKey: llmConfig.providerApiSecret,
+          model: llmConfig.model,
+          ...(tools?.length ? { tools } : {})
+        },
+        chatList
+      )
+      choice = (completion?.choices?.[0] as LlmCompletionChoice | undefined) ?? null
+      const usage = (completion as { usage?: Record<string, number | undefined> } | undefined)
+        ?.usage
+      Object.assign(llmRequestRecord, {
+        completionTokens: usage?.completion_tokens ?? null,
+        promptCacheHitTokens: usage?.prompt_cache_hit_tokens ?? null,
+        promptCacheMissTokens: usage?.prompt_cache_miss_tokens ?? null,
+        promptTokens: usage?.prompt_tokens ?? null,
+        totalTokens: usage?.total_tokens ?? null
+      } as Partial<LlmModelUsageRecord>)
+    } catch (err: unknown) {
+      console.log(`${logPrefix}request failed`, err)
+      blockModelSet.add(llmConfig.id)
+      Object.assign(llmRequestRecord, {
+        hasError: true,
+        errorMessage: getErrorMessage(err)
+      })
+    } finally {
+      llmRequestRecord.requestEndTime = new Date()
+      try {
+        await recordGptCompletionRequest(llmRequestRecord)
+      } catch (err: unknown) {
+        console.log('CANNOT_SAVE_LLM_COMPLETION_LOG', err)
+      }
+    }
+  }
+
+  return {
+    choice,
+    llmConfig: llmConfig!,
+    llmRequestRecord
+  }
 }
 
 const RESUME_PLACEHOLDER = `__REPLACE_REAL_RESUME_HERE__`
@@ -225,70 +359,20 @@ export const requestNewMessageContent = async (
     })
   }
   console.log(chatList)
-  let res, llmConfig
-  const llmRequestRecord: Omit<LlmModelUsageRecord, 'id' | 'providerApiSecretMd5'> & {
-    providerApiSecret: string
-  } = {}
-  const blockModelSet = new Set()
-  while (!res) {
-    let llmConfigList = await readConfigFile('llm.json')
-    if (llmConfigIdForPick?.length) {
-      llmConfigList = llmConfigList.filter((it) => {
-        return llmConfigIdForPick.includes(it.id)
-      })
-    }
-    llmConfig = pickLlmConfigFromList(llmConfigList, blockModelSet)
-    if (!llmConfig) {
-      throw new Error(`CANNOT_FIND_A_USABLE_MODEL`)
-    }
-    console.log(llmConfig.providerCompleteApiUrl)
-    Object.assign(llmRequestRecord, {
-      providerCompleteApiUrl: llmConfig.providerCompleteApiUrl,
-      model: llmConfig.model,
-      providerApiSecret: llmConfig.providerApiSecret,
-      requestStartTime: new Date(),
-      hasError: false,
-      errorMessage: '',
-      requestScene
-    })
-    try {
-      const completion = await completes(
-        {
-          baseURL: process.env.OPENAI_BASE_URL || llmConfig.providerCompleteApiUrl,
-          apiKey: process.env.OPENAI_API_KEY || llmConfig.providerApiSecret,
-          model: process.env.LLM_MODEL || llmConfig.model
-        },
-        chatList
-      )
-      res = completion?.choices?.[0] ?? null
-      Object.assign(llmRequestRecord, {
-        completionTokens: completion.usage?.completion_tokens ?? null,
-        promptCacheHitTokens: completion.usage?.prompt_cache_hit_tokens ?? null,
-        promptCacheMissTokens: completion.usage?.prompt_cache_miss_tokens ?? null,
-        promptTokens: completion.usage?.prompt_tokens ?? null,
-        totalTokens: completion.usage?.total_tokens ?? null
-      } as LlmModelUsageRecord)
-    } catch (err) {
-      console.log('request failed', err)
-      blockModelSet.add(llmConfig.id)
-      Object.assign(llmRequestRecord, {
-        hasError: true,
-        errorMessage: err?.message ?? ''
-      })
-    } finally {
-      llmRequestRecord.requestEndTime = new Date()
-      try {
-        await recordGptCompletionRequest(llmRequestRecord)
-      } catch (err) {
-        console.log('CANNOT_SAVE_LLM_COMPLETION_LOG', err)
-      }
-    }
-  }
+  const {
+    choice: res,
+    llmConfig,
+    llmRequestRecord
+  } = await requestChatCompletionWithFallback({
+    chatList,
+    requestScene,
+    llmConfigIdForPick
+  })
   console.log(res)
   // _index++
   let textToSend
   try {
-    const rawMarkdownText = res?.message?.content
+    const rawMarkdownText = res?.message?.content ?? ''
     try {
       textToSend = JSON.parse(
         rawMarkdownText.replace(/^```json/m, '').replace(/```$/m, '')
@@ -307,10 +391,10 @@ export const requestNewMessageContent = async (
         model: llmConfig?.model,
         providerCompleteApiUrl: llmConfig?.providerCompleteApiUrl
       })
-      throw new Error(`empty content. ${err?.message} ${res?.message?.content}`)
+      throw new Error(`empty content. ${rawMarkdownText}`)
     }
-  } catch (err) {
-    throw new Error(`fail to parse response. ${err?.message} ${res?.message?.content}`)
+  } catch (err: unknown) {
+    throw new Error(`fail to parse response. ${getErrorMessage(err)} ${res?.message?.content}`)
   }
   return {
     responseText: textToSend,
@@ -341,16 +425,20 @@ export async function sendMessage(page: Page, textToSend: string) {
   }
 
   // 1. 聚焦并使用原生 execCommand 一次性原子化注入文本，彻底杜绝逐字打字导致的光标中途跳回行首与乱序
-  await page.evaluate((selector, text) => {
-    const el = document.querySelector<HTMLElement>(selector)
-    if (!el) return
-    el.focus()
-    document.execCommand('selectAll', false, undefined)
-    document.execCommand('delete', false, undefined)
-    document.execCommand('insertText', false, text)
-    el.dispatchEvent(new Event('input', { bubbles: true }))
-    el.dispatchEvent(new Event('change', { bubbles: true }))
-  }, chatInputSelector, cleanText)
+  await page.evaluate(
+    (selector, text) => {
+      const el = document.querySelector<HTMLElement>(selector)
+      if (!el) return
+      el.focus()
+      document.execCommand('selectAll', false, undefined)
+      document.execCommand('delete', false, undefined)
+      document.execCommand('insertText', false, text)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+    },
+    chatInputSelector,
+    cleanText
+  )
 
   await sleepWithRandomDelay(800, 1200)
 
@@ -367,12 +455,16 @@ export async function sendMessage(page: Page, textToSend: string) {
 /**
  * 直接通过输入框工具栏发简历，并在弹窗中确认发送
  */
-export async function sendResumeViaToolbar(page: Page): Promise<{ success: boolean; error?: string }> {
+export async function sendResumeViaToolbar(
+  page: Page
+): Promise<{ success: boolean; error?: string }> {
   try {
     // 1. 定位并点击“发简历”按钮（双保险：d-c 埋点属性 + 工具栏精确文字匹配）
     const clicked = await page.evaluate(() => {
       // 方式 1: 尝试官方埋点属性
-      const btnByDc = document.querySelector<HTMLElement>('.chat-controls [d-c="62009"], .chat-editor [d-c="62009"]')
+      const btnByDc = document.querySelector<HTMLElement>(
+        '.chat-controls [d-c="62009"], .chat-editor [d-c="62009"]'
+      )
       if (btnByDc && btnByDc.offsetParent !== null) {
         btnByDc.click()
         return true
@@ -380,7 +472,9 @@ export async function sendResumeViaToolbar(page: Page): Promise<{ success: boole
 
       // 方式 2: 兜底逻辑——限定在工具栏内，严格按文字精确匹配“发简历”
       const toolbarButtons = Array.from(
-        document.querySelectorAll<HTMLElement>('.chat-controls .toolbar-btn, .chat-editor .toolbar-btn, .chat-controls div')
+        document.querySelectorAll<HTMLElement>(
+          '.chat-controls .toolbar-btn, .chat-editor .toolbar-btn, .chat-controls div'
+        )
       )
       const btnByText = toolbarButtons.find((el) => {
         const text = (el.textContent || '').replace(/\s+/g, '')
@@ -417,11 +511,16 @@ export async function sendResumeViaToolbar(page: Page): Promise<{ success: boole
         // 优先在可见容器中根据文本匹配确认按钮（“确定” / “发送” 等）
         for (const container of popoverContainers) {
           const clickableElements = Array.from(
-            container.querySelectorAll<HTMLElement>('.btn-sure-v2, .btn-sure, .btn-primary, button, span, a, div')
+            container.querySelectorAll<HTMLElement>(
+              '.btn-sure-v2, .btn-sure, .btn-primary, button, span, a, div'
+            )
           )
           const target = clickableElements.find((el) => {
             const text = el.textContent?.trim() || ''
-            return ['确定', '发送', '确认发送', '确定发送', '确认'].includes(text) && el.offsetParent !== null
+            return (
+              ['确定', '发送', '确认发送', '确定发送', '确认'].includes(text) &&
+              el.offsetParent !== null
+            )
           })
 
           if (target) {
@@ -461,7 +560,13 @@ export async function sendResumeViaToolbar(page: Page): Promise<{ success: boole
     const verifyResult = await page.evaluate(() => {
       const toastEl = document.querySelector('.boss-toast, .toast-box, .el-message')
       const toastText = toastEl?.textContent?.trim() || ''
-      if (toastText && (toastText.includes('上限') || toastText.includes('失败') || toastText.includes('超限') || toastText.includes('不可'))) {
+      if (
+        toastText &&
+        (toastText.includes('上限') ||
+          toastText.includes('失败') ||
+          toastText.includes('超限') ||
+          toastText.includes('不可'))
+      ) {
         return { success: false, error: toastText }
       }
       return { success: true, error: null }
@@ -473,17 +578,18 @@ export async function sendResumeViaToolbar(page: Page): Promise<{ success: boole
     }
 
     return { success: true }
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[sendResumeViaToolbar] 发送简历异常:', err)
-    return { success: false, error: err?.message || String(err) }
+    return { success: false, error: getErrorMessage(err) }
   }
 }
 
-export const RESUME_TOOL_DEFINITION = {
+export const RESUME_TOOL_DEFINITION: LlmToolDefinition = {
   type: 'function',
   function: {
     name: 'send_resume',
-    description: '当且仅当招聘者/HR在对话中明确提出索要简历、发一份简历、看下简历、发PDF、发word、互换简历等需求时调用。',
+    description:
+      '当且仅当招聘者/HR在对话中明确提出索要简历、发一份简历、看下简历、发PDF、发word、互换简历等需求时调用。',
     parameters: {
       type: 'object',
       properties: {
@@ -493,7 +599,8 @@ export const RESUME_TOOL_DEFINITION = {
         },
         reply_message: {
           type: 'string',
-          description: '伴随发送简历时附带回复给HR的自然简短文字，例如：好的，简历已发送给您，请您查阅！'
+          description:
+            '伴随发送简历时附带回复给HR的自然简短文字，例如：好的，简历已发送给您，请您查阅！'
         }
       },
       required: ['reply_message']
@@ -551,10 +658,9 @@ export function sendEmailViaNativeSMTP({
   html: string
 }): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve, reject) => {
-    const socket = tls.connect({ host, port, rejectUnauthorized: false })
+    const socket = tls.connect({ host, port })
 
     let step = 0
-    let buffer = ''
     let settled = false
 
     const finishResolve = () => {
@@ -581,7 +687,6 @@ export function sendEmailViaNativeSMTP({
 
     socket.on('data', (data: Buffer) => {
       const response = data.toString()
-      buffer += response
 
       if (step === 0 && response.startsWith('220')) {
         step = 1
@@ -635,7 +740,7 @@ export function sendEmailViaNativeSMTP({
       }
     })
 
-    socket.on('error', (err: any) => {
+    socket.on('error', (err: unknown) => {
       finishReject(err instanceof Error ? err : new Error(String(err)))
     })
 
@@ -674,7 +779,9 @@ export const sendAgentNotificationEmail = async ({
   const smtpPort = Number(process.env.SMTP_PORT || bossConf.smtpPort || 465)
 
   if (!smtpUser || !smtpPass) {
-    console.warn('[sendAgentNotificationEmail] 未配置 SMTP 凭证 (请在 .env 或 boss.json 中设置 SMTP_USER / SMTP_PASS)')
+    console.warn(
+      '[sendAgentNotificationEmail] 未配置 SMTP 凭证 (请在 .env 或 boss.json 中设置 SMTP_USER / SMTP_PASS)'
+    )
     return { success: false, error: 'MISSING_SMTP_CREDENTIALS' }
   }
 
@@ -688,11 +795,13 @@ export const sendAgentNotificationEmail = async ({
       subject,
       html: content
     })
-    console.log(`[sendAgentNotificationEmail] 邮件已成功通过原生 QQ SMTP 直连发送给 ${to || smtpUser}`)
+    console.log(
+      `[sendAgentNotificationEmail] 邮件已成功通过原生 QQ SMTP 直连发送给 ${to || smtpUser}`
+    )
     return { success: true }
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[sendAgentNotificationEmail] 原生 SMTP 直连发送失败:', err)
-    return { success: false, error: err?.message || String(err) }
+    return { success: false, error: getErrorMessage(err) }
   }
 }
 
@@ -742,16 +851,30 @@ export function applyDynamicChatPromptFeatureFlags(
   return result
 }
 
-const safeParseJson = (str: any) => {
+interface DynamicActionArgs {
+  reply_message?: unknown
+  reason?: unknown
+  action?: unknown
+  name?: unknown
+  response?: unknown
+}
+
+const readStringField = (val: unknown): string => (typeof val === 'string' ? val.trim() : '')
+
+const safeParseJson = (str: string | null | undefined): DynamicActionArgs | null => {
+  if (!str) return null
   try {
-    return JSON.parse(str)
+    const parsed: unknown = JSON.parse(str)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as DynamicActionArgs)
+      : null
   } catch {
     return null
   }
 }
 
 export function parseDynamicDialogueModelResponse(
-  choiceMessage: any,
+  choiceMessage: LlmChoiceMessage | null | undefined,
   {
     enableSendResumeTool = true,
     enableEmailForwardTool = false,
@@ -763,17 +886,17 @@ export function parseDynamicDialogueModelResponse(
     enableEmailForwardTool?: boolean
     enableDoNothing?: boolean
     emailForwardReplyMessage?: string
-    llmConfig?: any
+    llmConfig?: LlmConfigItem | null
   } = {}
 ): {
   action: 'send_text' | 'send_resume' | 'send_email' | 'do_nothing'
   textToSend: string
   reason?: string
-  usedLlmConfig?: any
+  usedLlmConfig?: LlmConfigItem | null
 } {
-  const resolveResumeAction = (args: any) => {
+  const resolveResumeAction = (args: DynamicActionArgs | null) => {
+    const candidateReply = readStringField(args?.reply_message)
     if (!enableSendResumeTool) {
-      const candidateReply = args?.reply_message?.trim() || ''
       return {
         action: 'send_text' as const,
         textToSend:
@@ -785,15 +908,15 @@ export function parseDynamicDialogueModelResponse(
     }
     return {
       action: 'send_resume' as const,
-      textToSend: args?.reply_message || '好的，简历已发送给您，请您查阅！',
-      reason: args?.reason || 'hr_requested_resume',
+      textToSend: candidateReply || '好的，简历已发送给您，请您查阅！',
+      reason: readStringField(args?.reason) || 'hr_requested_resume',
       usedLlmConfig: llmConfig
     }
   }
 
-  const resolveEmailAction = (args: any, defaultReason: string) => {
+  const resolveEmailAction = (args: DynamicActionArgs | null, defaultReason: string) => {
+    const candidateReply = readStringField(args?.reply_message)
     if (!enableEmailForwardTool) {
-      const candidateReply = args?.reply_message?.trim() || ''
       return {
         action: 'send_text' as const,
         textToSend:
@@ -806,24 +929,26 @@ export function parseDynamicDialogueModelResponse(
     const textToSend =
       typeof emailForwardReplyMessage === 'string'
         ? emailForwardReplyMessage.trim()
-        : args?.reply_message?.trim() || ''
+        : candidateReply
     return {
       action: 'send_email' as const,
       textToSend,
-      reason: args?.reason || defaultReason,
+      reason: readStringField(args?.reason) || defaultReason,
       usedLlmConfig: llmConfig
     }
   }
 
   // 解析结果：检查 tool_calls
   if (choiceMessage?.tool_calls?.length) {
-    const resumeToolCall = choiceMessage.tool_calls.find((tc: any) => tc.function?.name === 'send_resume')
+    const resumeToolCall = choiceMessage.tool_calls.find(
+      (tc) => tc.function?.name === 'send_resume'
+    )
     if (resumeToolCall) {
       return resolveResumeAction(safeParseJson(resumeToolCall.function?.arguments))
     }
 
     const emailToolCall = choiceMessage.tool_calls.find(
-      (tc: any) => tc.function?.name === 'send_email_to_candidate'
+      (tc) => tc.function?.name === 'send_email_to_candidate'
     )
     if (emailToolCall) {
       return resolveEmailAction(
@@ -844,7 +969,11 @@ export function parseDynamicDialogueModelResponse(
     return resolveResumeAction(parsed)
   }
 
-  const textToSend = (parsed?.response || rawText).replace(/^["'“”]/, '').replace(/["'“”]$/, '').trim()
+  const parsedResponse = readStringField(parsed?.response)
+  const textToSend = (parsedResponse || rawText)
+    .replace(/^["'“”]/, '')
+    .replace(/["'“”]$/, '')
+    .trim()
 
   // 检查是否选择不回复（输出空白或显式静默指令）
   if (!textToSend || /^(无需回复|不回复|暂不回复|无)$/i.test(textToSend)) {
@@ -873,7 +1002,7 @@ export function parseDynamicDialogueModelResponse(
  * 请求大模型生成针对 HR 回复的拟人化多轮对话内容，并支持 send_resume 与 send_email_to_candidate Tool 调用
  */
 export const requestDynamicDialogueReply = async (
-  chatRecords: Array<{ isSelf: boolean; text?: string; messageType?: string }>,
+  chatRecords: ChatHistoryMessageItem[],
   {
     llmConfigIdForPick,
     enableSendResumeTool = true,
@@ -893,7 +1022,7 @@ export const requestDynamicDialogueReply = async (
   action: 'send_text' | 'send_resume' | 'send_email' | 'do_nothing'
   textToSend: string
   reason?: string
-  usedLlmConfig?: any
+  usedLlmConfig?: LlmConfigItem | null
 }> => {
   let systemMessageTemplate = await getValidTemplate({ type: 'dynamicChat' })
   systemMessageTemplate = applyDynamicChatPromptFeatureFlags(systemMessageTemplate, {
@@ -933,7 +1062,8 @@ export const requestDynamicDialogueReply = async (
         content: text
       })
     } else {
-      const isSystem = (record as any).isSystem || record.messageType === 'dialog' || record.messageType === 'system'
+      const isSystem =
+        record.isSystem || record.messageType === 'dialog' || record.messageType === 'system'
       chatList.push({
         role: 'user',
         content: isSystem ? `[系统通知: ${text}]` : text
@@ -949,75 +1079,21 @@ export const requestDynamicDialogueReply = async (
     })
   }
 
-  let res: any = null
-  let llmConfig: any = null
-  const llmRequestRecord: Omit<LlmModelUsageRecord, 'id' | 'providerApiSecretMd5'> & {
-    providerApiSecret: string
-  } = {} as any
-  const blockModelSet = new Set()
-
-  while (!res) {
-    let llmConfigList = await readConfigFile('llm.json')
-    if (llmConfigIdForPick?.length) {
-      llmConfigList = llmConfigList.filter((it: any) => llmConfigIdForPick.includes(it.id))
-    }
-    llmConfig = pickLlmConfigFromList(llmConfigList, blockModelSet)
-    if (!llmConfig) {
-      throw new Error(`CANNOT_FIND_A_USABLE_MODEL`)
-    }
-
-    Object.assign(llmRequestRecord, {
-      providerCompleteApiUrl: llmConfig.providerCompleteApiUrl,
-      model: llmConfig.model,
-      providerApiSecret: llmConfig.providerApiSecret,
-      requestStartTime: new Date(),
-      hasError: false,
-      errorMessage: '',
-      requestScene: RequestSceneEnum.readNoReplyAutoReminder
-    })
-
-    try {
-      const completesParams: any = {
-        baseURL: process.env.OPENAI_BASE_URL || llmConfig.providerCompleteApiUrl,
-        apiKey: process.env.OPENAI_API_KEY || llmConfig.providerApiSecret,
-        model: process.env.LLM_MODEL || llmConfig.model
-      }
-      const tools: any[] = []
-      if (enableSendResumeTool) {
-        tools.push(RESUME_TOOL_DEFINITION)
-      }
-      if (enableEmailForwardTool) {
-        tools.push(getEmailForwardToolDefinition(emailForwardReplyMessage))
-      }
-      if (tools.length) {
-        completesParams.tools = tools
-      }
-
-      const completion = await completes(completesParams, chatList)
-      res = completion?.choices?.[0] ?? null
-      Object.assign(llmRequestRecord, {
-        completionTokens: completion.usage?.completion_tokens ?? null,
-        promptCacheHitTokens: completion.usage?.prompt_cache_hit_tokens ?? null,
-        promptCacheMissTokens: completion.usage?.prompt_cache_miss_tokens ?? null,
-        promptTokens: completion.usage?.prompt_tokens ?? null,
-        totalTokens: completion.usage?.total_tokens ?? null
-      } as LlmModelUsageRecord)
-    } catch (err: any) {
-      console.log('[dynamicChat] request failed', err)
-      blockModelSet.add(llmConfig.id)
-      Object.assign(llmRequestRecord, {
-        hasError: true,
-        errorMessage: err?.message ?? ''
-      })
-    } finally {
-      llmRequestRecord.requestEndTime = new Date()
-      try {
-        await recordGptCompletionRequest(llmRequestRecord)
-      } catch (err) {
-        console.log('CANNOT_SAVE_LLM_COMPLETION_LOG', err)
-      }
-    }
+  const tools: LlmToolDefinition[] = []
+  if (enableSendResumeTool) {
+    tools.push(RESUME_TOOL_DEFINITION)
   }
+  if (enableEmailForwardTool) {
+    tools.push(getEmailForwardToolDefinition(emailForwardReplyMessage))
+  }
+
+  const { choice: res, llmConfig } = await requestChatCompletionWithFallback({
+    chatList,
+    requestScene: RequestSceneEnum.readNoReplyAutoReminder,
+    llmConfigIdForPick,
+    tools: tools.length ? tools : undefined,
+    logPrefix: '[dynamicChat] '
+  })
 
   return parseDynamicDialogueModelResponse(res?.message, {
     enableSendResumeTool,
@@ -1027,4 +1103,3 @@ export const requestDynamicDialogueReply = async (
     llmConfig
   })
 }
-

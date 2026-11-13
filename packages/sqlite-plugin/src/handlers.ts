@@ -12,6 +12,7 @@ import { MarkAsNotSuitLog } from "./entity/MarkAsNotSuitLog";
 import { ChatMessageRecord } from "./entity/ChatMessageRecord";
 import { LlmModelUsageRecord } from "./entity/LlmModelUsageRecord";
 import { JobHireStatusRecord } from "./entity/JobHireStatusRecord";
+import { DynamicChatState } from "./entity/DynamicChatState";
 
 function getBossInfoIfIsEqual (savedOne, currentOne) {
   if (savedOne === currentOne) {
@@ -387,4 +388,37 @@ export async function getJobHireStatusRecord(
     }
   })
   return result
+}
+
+export async function getAllDynamicChatStates(
+  ds: DataSource
+): Promise<DynamicChatState[]> {
+  const repo = ds.getRepository(DynamicChatState);
+  return await repo.find();
+}
+
+export async function saveDynamicChatState(
+  ds: DataSource,
+  patch: Partial<DynamicChatState> & { encryptBossId: string }
+): Promise<DynamicChatState> {
+  const repo = ds.getRepository(DynamicChatState);
+  const existing = await repo.findOne({
+    where: {
+      encryptBossId: patch.encryptBossId
+    }
+  });
+  const record = new DynamicChatState();
+  record.encryptBossId = patch.encryptBossId;
+  record.turnCount = 0;
+  record.isHandedOver = false;
+  if (existing) {
+    Object.assign(record, existing);
+  }
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== undefined) {
+      (record as any)[k] = v;
+    }
+  }
+  record.updatedAt = patch.updatedAt ?? new Date();
+  return await repo.save(record);
 }

@@ -207,66 +207,105 @@ export const pageMapByName: {
 
 // periodPushCurrentPageScreenshot()
 
-async function saveCurrentChatRecord(page) {
-  const userInfo = await page.evaluate(
-    'document.querySelector(".main-wrap").__vue__.$store.state.userInfo'
-  )
-  const bossInfo = await page.evaluate(
-    'document.querySelector(".chat-conversation .chat-record")?.__vue__?.boss'
-  )
-
-  const ds = await dbInitPromise
-  // save boss info
-  const bossInfoRepository = ds.getRepository(BossInfo)
-  let targetBossInfo = await bossInfoRepository.findOneBy({
-    encryptBossId: bossInfo.encryptBossId
-  })
-  if (!targetBossInfo) {
-    targetBossInfo = new BossInfo()
-    Object.assign(targetBossInfo, {
-      encryptBossId: bossInfo.encryptBossId,
-      name: bossInfo.name,
-      title: bossInfo.title,
-      date: new Date()
+export async function saveCurrentChatRecord(page, fallbackBossInfo?: Partial<ChatListItem>) {
+  try {
+    const userInfo = await page.evaluate(
+      'document.querySelector(".main-wrap")?.__vue__?.$store?.state?.userInfo'
+    )
+    const pageBossInfo = await page.evaluate(() => {
+      const b = (document.querySelector('.chat-conversation .chat-record') as any)?.__vue__?.boss
+      if (b?.encryptBossId) return b
+      const s = (document.querySelector('.chat-conversation') as any)?.__vue__?.selectedFriend$
+      return s?.encryptBossId ? s : null
     })
-    await bossInfoRepository.save(targetBossInfo)
-  }
+    const bossInfo = pageBossInfo || fallbackBossInfo
 
-  const rawChatRecordList =
-    (
-      await page.evaluate(
-        'document.querySelector(".message-content .chat-record").__vue__.records$'
-      )
-    )?.filter((msg) => ['received', 'sent'].includes(msg.style)) ?? []
-  const chatRecordList = rawChatRecordList.map((it) => {
-    const mappedItem = {} as InstanceType<typeof ChatMessageRecord>
-    mappedItem.mid = it.mid
-    mappedItem.encryptFromUserId =
-      it.style === 'sent'
-        ? userInfo.encryptUserId
-        : it.style === 'received'
-          ? bossInfo.encryptBossId
-          : ''
-    mappedItem.encryptToUserId =
-      it.style === 'sent'
-        ? bossInfo.encryptBossId
-        : it.style === 'received'
-          ? userInfo.encryptUserId
-          : ''
-    mappedItem.style = it.style
-    mappedItem.type = it.type
-    mappedItem.time = it.time ? new Date(it.time) : null
-    mappedItem.text = it.text
-    if (it.type === 'image') {
-      mappedItem.imageUrl = it.image?.originImage?.url
-      mappedItem.imageHeight = it.image?.originImage?.url?.height
-      mappedItem.imageWidth = it.image?.originImage?.url?.width
+    if (!userInfo?.encryptUserId || !bossInfo?.encryptBossId) {
+      console.warn('[saveCurrentChatRecord] 缺少 userInfo 或 bossInfo，跳过写入聊天记录')
+      return
     }
 
-    return mappedItem
-  })
+    const ds = await dbInitPromise
+    // save boss info
+    const bossInfoRepository = ds.getRepository(BossInfo)
+    let targetBossInfo = await bossInfoRepository.findOneBy({
+      encryptBossId: bossInfo.encryptBossId
+    })
+    if (!targetBossInfo) {
+      targetBossInfo = new BossInfo()
+      Object.assign(targetBossInfo, {
+        encryptBossId: bossInfo.encryptBossId,
+        name: bossInfo.name ?? fallbackBossInfo?.name ?? '',
+        title:
+          bossInfo.title ??
+          (bossInfo as any).sourceTitle ??
+          fallbackBossInfo?.title ??
+          fallbackBossInfo?.sourceTitle ??
+          '',
+        date: new Date()
+      })
+      await bossInfoRepository.save(targetBossInfo)
+    }
 
-  await saveChatMessageRecord(ds, chatRecordList)
+    const rawChatState = (await page.evaluate(() => {
+      const vm = (document.querySelector('.message-content .chat-record') as any)?.__vue__
+      if (Array.isArray(vm?.list$)) {
+        return { source: 'list$', items: vm.list$ }
+      }
+      if (Array.isArray(vm?.records$)) {
+        return { source: 'records$', items: vm.records$ }
+      }
+      return { source: 'none', items: [] }
+    })) ?? { source: 'none', items: [] }
+
+    const rawChatRecordList = (
+      rawChatState.source === 'list$'
+        ? rawChatState.items.filter(messageForSaveFilter)
+        : rawChatState.items.filter((msg) => ['received', 'sent'].includes(msg?.style))
+    ).filter((it) => it?.mid != null && it?.mid !== '')
+
+    if (!rawChatRecordList.length) {
+      return
+    }
+
+    const chatRecordList = rawChatRecordList.map((it) => {
+      const style =
+        typeof it.isSelf === 'boolean' ? (it.isSelf ? 'sent' : 'received') : it.style
+      const mappedItem = {} as InstanceType<typeof ChatMessageRecord>
+      mappedItem.mid = it.mid
+      mappedItem.encryptFromUserId =
+        style === 'sent'
+          ? userInfo.encryptUserId
+          : style === 'received'
+            ? bossInfo.encryptBossId
+            : ''
+      mappedItem.encryptToUserId =
+        style === 'sent'
+          ? bossInfo.encryptBossId
+          : style === 'received'
+            ? userInfo.encryptUserId
+            : ''
+      mappedItem.style = style
+      mappedItem.type = it.type ?? it.messageType
+      const parsedTime = it.time ? new Date(it.time) : null
+      mappedItem.time =
+        parsedTime && !Number.isNaN(parsedTime.getTime()) ? parsedTime : null
+      mappedItem.text = it.text ?? null
+      if (mappedItem.type === 'image' || it.messageType === 'image') {
+        mappedItem.imageUrl = it.image?.originImage?.url
+        mappedItem.imageHeight =
+          it.image?.originImage?.height ?? it.image?.originImage?.url?.height
+        mappedItem.imageWidth =
+          it.image?.originImage?.width ?? it.image?.originImage?.url?.width
+      }
+
+      return mappedItem
+    })
+
+    await saveChatMessageRecord(ds, chatRecordList)
+  } catch (err) {
+    console.warn('[saveCurrentChatRecord] 保存聊天记录失败:', err)
+  }
 }
 
 async function checkJobIsClosed() {
@@ -1080,7 +1119,7 @@ const mainLoop = async () => {
     }
     cursorToContinueFind = toCheckItemAtIndex + 1
     await sleep(1000)
-    await saveCurrentChatRecord(pageMapByName.boss!)
+    await saveCurrentChatRecord(pageMapByName.boss!, targetBoss)
     await sleep(3000)
   }
 }

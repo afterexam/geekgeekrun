@@ -37,14 +37,34 @@ export function formatCompanyScale(low, high) {
   return `${low}-${high}人`
 }
 
+const STATUTORY_MONTHLY_WORK_DAYS = 21.75;
+
+const roundTo2Decimals = (n: number) => Math.round(n * 100) / 100;
+
 export const parseSalary = (str: string): { low: null | number, high: null | number, month: null | number } => {
-  const result = {
+  const result: { low: null | number, high: null | number, month: null | number } = {
     high: null,
     low: null,
     month: null
   }
   if (!str) {
     return result
+  }
+
+  const dailyMatchResult = str.match(
+    /([\.\d]+)(?:\s*[-~～至]\s*([\.\d]+))?\s*(k)?\s*元?\s*[/／]\s*[天日]/i
+  );
+  if (dailyMatchResult) {
+    const multiplier = dailyMatchResult[3] ? 1000 : 1;
+    const rawLow = Number(dailyMatchResult[1]) * multiplier;
+    const rawHigh = dailyMatchResult[2] !== undefined ? Number(dailyMatchResult[2]) * multiplier : rawLow;
+    if (Number.isFinite(rawLow) && Number.isFinite(rawHigh)) {
+      const lowK = roundTo2Decimals((Math.min(rawLow, rawHigh) * STATUTORY_MONTHLY_WORK_DAYS) / 1000);
+      const highK = roundTo2Decimals((Math.max(rawLow, rawHigh) * STATUTORY_MONTHLY_WORK_DAYS) / 1000);
+      result.low = lowK;
+      result.high = highK;
+    }
+    return result;
   }
 
   const baseMatchResult = str.match(

@@ -976,11 +976,8 @@ async function toRecommendPage (hooks) {
                 // so just set those job which city is not suit to blockJobNotSuit
                 // to skip view detail
 
-                // skip invalid salaryData (兼职、日结、实习 etc)
+                // filter out invalid salaryData
                 jobListData.forEach(it => {
-                  if (it.salaryDesc && (it.salaryDesc.includes('天') || it.salaryDesc.includes('日'))) {
-                    return
-                  }
                   const salaryData = parseSalary(it.salaryDesc)
                   if (!salaryData.high || !salaryData.low) {
                     blockJobNotSuit.add(it.encryptJobId)
@@ -1016,9 +1013,6 @@ async function toRecommendPage (hooks) {
               let targetJobIndex = -1
               let targetJobData, selectedJobData // they show be same; one is from list, another is from detail
               function checkIfSalarySuit(salaryDesc) {
-                if (salaryDesc && (salaryDesc.includes('天') || salaryDesc.includes('日'))) {
-                  return true
-                }
                 const salaryData = parseSalary(salaryDesc)
                 if (expectSalaryCalculateWay === SalaryCalculateWay.MONTH_SALARY) {
                   let ourSalaryInterval = [expectSalaryLow ?? null, expectSalaryHigh ?? null]

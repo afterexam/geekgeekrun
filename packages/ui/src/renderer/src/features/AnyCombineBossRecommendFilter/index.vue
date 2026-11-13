@@ -129,13 +129,12 @@
     <div class="filter-item">
       <div font-size-12px>求职类型</div>
       <el-select
-        v-model="modelValue.jobTypeList"
-        multiple
+        v-model="selectedJobType"
         clearable
-        collapse-tags
-        collapse-tags-tooltip
+        :value-on-clear="null"
+        placeholder="不限"
       >
-        <el-option v-for="it in jobTypeOptions" :key="it.code" :value="it.code" :label="it.name" />
+        <el-option v-for="it in JOB_TYPE_OPTIONS" :key="it.code" :value="it.code" :label="it.name" />
       </el-select>
     </div>
   </div>
@@ -144,16 +143,14 @@
 <script lang="ts" setup>
 import conditions from '@geekgeekrun/geek-auto-start-chat-with-boss/internal-config/job-filter-conditions-20241002.json'
 import industryFilterExemption from '@geekgeekrun/geek-auto-start-chat-with-boss/internal-config/job-filter-industry-filter-exemption-20241002.json'
+import {
+  JOB_TYPE_OPTIONS,
+  normalizeJobTypeList
+} from '@geekgeekrun/geek-auto-start-chat-with-boss/combineCalculator.mjs'
 import CityChooser from '@renderer/page/MainLayout/GeekAutoStartChatWithBoss/components/CityChooser.vue'
-import { PropType } from 'vue'
+import { computed, PropType } from 'vue'
 
-const jobTypeOptions = [
-  { code: 1, name: '全职' },
-  { code: 2, name: '兼职' },
-  { code: 3, name: '实习' }
-]
-
-defineProps({
+const props = defineProps({
   modelValue: {
     type: Object as PropType<{
       cityList: string[]
@@ -164,6 +161,18 @@ defineProps({
       scaleList: number[]
       jobTypeList: number[]
     }>
+  }
+})
+
+const selectedJobType = computed<number | null>({
+  get() {
+    return normalizeJobTypeList(props.modelValue?.jobTypeList)[0] ?? null
+  },
+  set(val) {
+    if (!props.modelValue) {
+      return
+    }
+    props.modelValue.jobTypeList = normalizeJobTypeList([val])
   }
 })
 </script>

@@ -147,10 +147,12 @@
               v-model="row.jobType"
               :disabled="row.___itemType === 'empty-condition-placeholder'"
               clearable
+              :value-on-clear="null"
+              placeholder="不限"
               size="small"
             >
               <el-option
-                v-for="it in jobTypeOptions"
+                v-for="it in JOB_TYPE_OPTIONS"
                 :key="it.code"
                 :value="it.code"
                 :label="it.name"
@@ -221,13 +223,10 @@ import { ArrowUp, ArrowDown, Delete, Plus } from '@element-plus/icons-vue'
 import { computed, PropType } from 'vue'
 import CityChooser from '@renderer/page/MainLayout/GeekAutoStartChatWithBoss/components/CityChooser.vue'
 
-import { getStaticCombineFilterKey } from '@geekgeekrun/geek-auto-start-chat-with-boss/combineCalculator.mjs'
-
-const jobTypeOptions = [
-  { code: 1, name: '全职' },
-  { code: 2, name: '兼职' },
-  { code: 3, name: '实习' }
-]
+import {
+  getStaticCombineFilterKey,
+  JOB_TYPE_OPTIONS
+} from '@geekgeekrun/geek-auto-start-chat-with-boss/combineCalculator.mjs'
 
 const props = defineProps({
   modelValue: {

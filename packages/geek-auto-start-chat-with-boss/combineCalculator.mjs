@@ -58,19 +58,64 @@ function combineWithZero(arr, min, max) {
   return combineResult;
 }
 
+export const JOB_TYPE_OPTIONS = [
+  { code: 1, name: '全职' },
+  { code: 2, name: '兼职' },
+  { code: 3, name: '实习' },
+]
+
+export const JOB_TYPE_NAME_BY_CODE = {
+  0: '不限',
+  ...Object.fromEntries(JOB_TYPE_OPTIONS.map((it) => [it.code, it.name])),
+}
+
+const COMBINABLE_FILTER_KEYS = [
+  'cityList',
+  'salaryList',
+  'experienceList',
+  'degreeList',
+  'scaleList',
+  'industryList',
+]
+
+export function normalizeJobTypeList(jobTypeList) {
+  if (!Array.isArray(jobTypeList)) {
+    return []
+  }
+  const validCode = jobTypeList
+    .map(Number)
+    .find((code) => code !== 0 && Object.hasOwn(JOB_TYPE_NAME_BY_CODE, code))
+  return validCode ? [validCode] : []
+}
+
+export function isEmptyCombinableFilterCondition(condition) {
+  if (!condition || typeof condition !== 'object') {
+    return true
+  }
+  return COMBINABLE_FILTER_KEYS.every((k) => !condition[k]?.length)
+}
+
 export function* combineFiltersWithConstraintsGenerator(selectedFilters) {
-  const { cityList, salaryList, experienceList, degreeList, scaleList, industryList } =
-    selectedFilters;
+  const {
+    cityList,
+    salaryList,
+    experienceList,
+    degreeList,
+    scaleList,
+    industryList,
+    jobTypeList,
+  } = selectedFilters ?? {};
+  const normalizedJobTypeList = normalizeJobTypeList(jobTypeList)
 
   // 生成符合限制条件的组合
   const cityComb = combineWithZero(cityList, 0, 1) // Salary: 0-1 个
   const salaryComb = combineWithZero(salaryList, 0, 1) // Salary: 0-1 个
-  const experienceComb = combineWithZero(experienceList, 0, experienceList.length) // Experience: 0 个或更多
-  const degreeComb = combineWithZero(degreeList, 0, degreeList.length) // Degree: 0 个或更多
-  const scaleComb = combineWithZero(scaleList, 0, scaleList.length) // Scale: 0 个或更多
+  const experienceComb = combineWithZero(experienceList, 0, experienceList?.length ?? 0) // Experience: 0 个或更多
+  const degreeComb = combineWithZero(degreeList, 0, degreeList?.length ?? 0) // Degree: 0 个或更多
+  const scaleComb = combineWithZero(scaleList, 0, scaleList?.length ?? 0) // Scale: 0 个或更多
   const industryComb = combineWithZero(industryList, 0, 3) // Industry: 0-3 个
 
-  // 通过迭代生成所有组合
+  // 通过迭代生成所有组合（求职类型为全局单选条件，不参与组合膨胀）
   for (const city of cityComb) {
     for (const salary of salaryComb) {
       for (const experience of experienceComb) {
@@ -83,7 +128,8 @@ export function* combineFiltersWithConstraintsGenerator(selectedFilters) {
                 experienceList: experience,
                 degreeList: degree,
                 scaleList: scale,
-                industryList: industry
+                industryList: industry,
+                jobTypeList: [...normalizedJobTypeList],
               }
             }
           }
@@ -105,7 +151,7 @@ export function calculateTotalCombinations(selectedFilters, includeEmptyConditio
     degreeList = [],
     scaleList = [],
     industryList = []
-  } = selectedFilters
+  } = selectedFilters ?? {}
 
   // 生成符合限制条件的组合
   const cityComb = combineWithZero(cityList, 0, 1) // City: 0-1 个
@@ -129,7 +175,7 @@ export function checkAnyCombineBossRecommendFilterHasCondition(value) {
   if (!Object.keys(value ?? {}).length) {
     return false
   }
-  return Object.keys(value).some((k) => {
+  return COMBINABLE_FILTER_KEYS.some((k) => {
     return !!value[k]?.length
   })
 }
@@ -137,7 +183,7 @@ export function checkAnyCombineBossRecommendFilterHasCondition(value) {
 export function getStaticCombineFilterKey(condition) {
   const kAsO = {}
   for (const key of Object.keys(condition ?? []).sort()) {
-    if (condition[key] === null || condition[key] === undefined) {
+    if (condition[key] === null || condition[key] === undefined || condition[key] === '') {
       continue
     }
     kAsO[key] = condition[key]
@@ -161,7 +207,7 @@ export function formatStaticCombineFilters(rawStaticCombineRecommendJobFilterCon
       degreeList: condition.degree ? [condition.degree] : [],
       scaleList: condition.scale ? [condition.scale] : [],
       industryList: condition.industry ? [condition.industry] : [],
-      jobTypeList: condition.jobType ? [condition.jobType] : []
+      jobTypeList: condition.jobType ? normalizeJobTypeList([condition.jobType]) : []
     }
   })
   if (!result.length) {

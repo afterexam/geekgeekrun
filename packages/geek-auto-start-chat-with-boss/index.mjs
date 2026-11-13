@@ -17,6 +17,9 @@ import {
   combineFiltersWithConstraintsGenerator,
   checkAnyCombineBossRecommendFilterHasCondition,
   formatStaticCombineFilters,
+  JOB_TYPE_NAME_BY_CODE,
+  normalizeJobTypeList,
+  isEmptyCombinableFilterCondition,
 } from './combineCalculator.mjs'
 import { default as jobFilterConditions } from './internal-config/job-filter-conditions-20241002.json'
 import { default as rawIndustryFilterExemption } from './internal-config/job-filter-industry-filter-exemption-20241002.json'
@@ -492,10 +495,11 @@ async function setFilterCondition (selectedFilters) {
     industryList = [],
     jobTypeList = []
   } = selectedFilters
+  const normalizedJobTypeList = normalizeJobTypeList(jobTypeList)
 
   const placeholderTexts = ['城市', '求职类型', '薪资待遇', '工作经验', '学历要求', '公司行业', '公司规模']
   const optionKaPrefixes = ['switch_city_dialog_open', 'sel-job-rec-jobtype-', 'sel-job-rec-salary-', 'sel-job-rec-exp-', 'sel-job-rec-degree-', 'sel-industry-', 'sel-job-rec-scale-']
-  const conditionArr = [cityList, jobTypeList, salaryList, experienceList, degreeList, industryList, scaleList]
+  const conditionArr = [cityList, normalizedJobTypeList, salaryList, experienceList, degreeList, industryList, scaleList]
 
   console.log('current filter condition----')
   for (let i = 0; i < placeholderTexts.length; i++) {
@@ -504,6 +508,8 @@ async function setFilterCondition (selectedFilters) {
     console.log(`${text}：`, condition.length === 0 ? '不限' : condition.map(code => {
       if (text === '公司行业') {
         return industryFilterConditionsMapByCode[code]?.name ?? code
+      } else if (text === '求职类型') {
+        return JOB_TYPE_NAME_BY_CODE[code] ?? code
       } else {
         return jobFilterConditionsMapByCode[code]?.name ?? code
       }
@@ -600,8 +606,8 @@ async function setFilterCondition (selectedFilters) {
             let buxianOptionElProxy = await page.$(`.page-jobs-main .filter-condition-inner [ka="${optionKaPrefix}${0}"]`)
             if (!buxianOptionElProxy && placeholderText === '求职类型') {
               buxianOptionElProxy = await page.evaluateHandle((dropdownEl) => {
-                const items = dropdownEl.querySelectorAll('ul li, a, div')
-                return Array.from(items).find(el => el.textContent.trim() === '不限')
+                const matchedLi = Array.from(dropdownEl.querySelectorAll('ul li')).find(li => li.textContent?.trim() === '不限')
+                return matchedLi ? (matchedLi.querySelector('a') || matchedLi) : null
               }, filterDropdownProxy).then(h => h.asElement())
             }
             if (buxianOptionElProxy) {
@@ -618,7 +624,7 @@ async function setFilterCondition (selectedFilters) {
               })
             })
           )).map(it => it.replace(optionKaPrefix, '')).map(Number)
-          if (placeholderText !== '薪资待遇') {
+          if (placeholderText !== '薪资待遇' && placeholderText !== '求职类型') {
             for(let i = 0; i < activeOptionValues.length; i++) {
               let activeValue
               if (placeholderText === '公司行业') {
@@ -634,13 +640,15 @@ async function setFilterCondition (selectedFilters) {
           }
           //#endregion
           //#region only click the one which we need check, don't change already checked.
-          const conditionToCheck = currentFilterConditions.filter(it => {
-            if (placeholderText === '公司行业') {
-              return !activeOptionValues.map(value => industryFilterConditionsMapByIndex[value].code).includes(it);
-            } else {
-              return !activeOptionValues.includes(it)
-            }
-          })
+          const conditionToCheck = placeholderText === '求职类型'
+            ? currentFilterConditions
+            : currentFilterConditions.filter(it => {
+              if (placeholderText === '公司行业') {
+                return !activeOptionValues.map(value => industryFilterConditionsMapByIndex[value].code).includes(it);
+              } else {
+                return !activeOptionValues.includes(it)
+              }
+            })
           for(let j = 0; j < conditionToCheck.length; j++) {
             let optionValue
             if (placeholderText === '公司行业') {
@@ -658,35 +666,34 @@ async function setFilterCondition (selectedFilters) {
             await sleepWithRandomDelay(500)
             let optionElProxy = await page.$(`.page-jobs-main .filter-condition-inner [ka="${optionKaPrefix}${optionValue}"]`)
             if (!optionElProxy && placeholderText === '求职类型') {
-              const textMap = { '0': '不限', '1': '全职', '2': '兼职', '3': '实习' }
-              const targetText = textMap[optionValue]
+              const targetText = JOB_TYPE_NAME_BY_CODE[optionValue]
               if (targetText) {
                 optionElProxy = await page.evaluateHandle((dropdownEl, text) => {
-                  const items = dropdownEl.querySelectorAll('ul li, a, div')
-                  return Array.from(items).find(el => el.textContent.trim() === text)
+                  const matchedLi = Array.from(dropdownEl.querySelectorAll('ul li')).find(li => li.textContent?.trim() === text)
+                  return matchedLi ? (matchedLi.querySelector('a') || matchedLi) : null
                 }, filterDropdownProxy, targetText).then(h => h.asElement())
               }
             }
             if (!optionElProxy) {
               continue;
             }
-            const isOptionAlreadyActive = await optionElProxy.evaluate(el => el.classList.contains('active'))
+            const isOptionAlreadyActive = await optionElProxy.evaluate(el => el.classList.contains('active') || Boolean(el.closest('li')?.classList.contains('active')))
             if (!isOptionAlreadyActive) {
               await optionElProxy.click()
             }
           }
           //#endregion
-          //#region move out dropdown entry to make dropdown hidden
-          const navBarLogoElProxy = await page.$(`[ka="header-home-logo"]`)
-          if (navBarLogoElProxy) {
-            const navBarLogoElBBox = await navBarLogoElProxy.boundingBox()
-            await page.mouse.move(
-              navBarLogoElBBox.x + navBarLogoElBBox.width / 2,
-              navBarLogoElBBox.y + navBarLogoElBBox.height / 2,
-            )
-          }
-          //#endregion
         }
+        //#region move out dropdown entry to make dropdown hidden
+        const navBarLogoElProxy = await page.$(`[ka="header-home-logo"]`)
+        if (navBarLogoElProxy) {
+          const navBarLogoElBBox = await navBarLogoElProxy.boundingBox()
+          await page.mouse.move(
+            navBarLogoElBBox.x + navBarLogoElBBox.width / 2,
+            navBarLogoElBBox.y + navBarLogoElBBox.height / 2,
+          )
+        }
+        //#endregion
         await sleepWithRandomDelay(500)
       }
     }
@@ -850,9 +857,6 @@ async function toRecommendPage (hooks) {
     iterateFilterCondition: for (
       const filterCondition of filterConditions
     ) {
-      if (filterCondition.jobTypeList === undefined) {
-        filterCondition.jobTypeList = anyCombineRecommendJobFilter.jobTypeList || []
-      }
       filterConditionIndex++
       console.log(`current filter condition index to apply: ${filterConditionIndex}`, JSON.stringify(filterCondition))
       findInCurrentFilterCondition: while(true) {
@@ -886,8 +890,7 @@ async function toRecommendPage (hooks) {
           (
             combineRecommendJobFilterType === CombineRecommendJobFilterType.ANY_COMBINE &&
             isSkipEmptyConditionForCombineRecommendJobFilter &&
-            Object.keys(filterCondition).length &&
-            Object.keys(filterCondition).every(k => !filterCondition[k]?.length)
+            isEmptyCombinableFilterCondition(filterCondition)
           )
         ) {
           sleep(4000)
@@ -1013,6 +1016,9 @@ async function toRecommendPage (hooks) {
               let targetJobIndex = -1
               let targetJobData, selectedJobData // they show be same; one is from list, another is from detail
               function checkIfSalarySuit(salaryDesc) {
+                if (salaryDesc && (salaryDesc.includes('天') || salaryDesc.includes('日'))) {
+                  return true
+                }
                 const salaryData = parseSalary(salaryDesc)
                 if (expectSalaryCalculateWay === SalaryCalculateWay.MONTH_SALARY) {
                   let ourSalaryInterval = [expectSalaryLow ?? null, expectSalaryHigh ?? null]

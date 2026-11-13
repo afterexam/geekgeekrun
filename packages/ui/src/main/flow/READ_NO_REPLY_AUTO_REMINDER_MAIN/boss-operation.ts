@@ -555,6 +555,25 @@ export function sendEmailViaNativeSMTP({
 
     let step = 0
     let buffer = ''
+    let settled = false
+
+    const finishResolve = () => {
+      if (settled) return
+      settled = true
+      socket.end()
+      resolve({ success: true })
+    }
+
+    const finishReject = (err: Error) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      reject(err)
+    }
+
+    socket.setTimeout(15000, () => {
+      finishReject(new Error('SMTP connection timeout'))
+    })
 
     function sendCommand(cmd: string) {
       socket.write(cmd + '\r\n')
@@ -610,19 +629,19 @@ export function sendEmailViaNativeSMTP({
       } else if (step === 8 && response.startsWith('250')) {
         step = 9
         sendCommand('QUIT')
-        resolve({ success: true })
+        finishResolve()
       } else if (response.startsWith('5') || response.startsWith('4')) {
-        reject(new Error(`SMTP Error: ${response.trim()}`))
+        finishReject(new Error(`SMTP Error: ${response.trim()}`))
       }
     })
 
     socket.on('error', (err: any) => {
-      reject(err)
+      finishReject(err instanceof Error ? err : new Error(String(err)))
     })
 
     socket.on('end', () => {
       if (step < 8) {
-        reject(new Error('SMTP connection closed unexpectedly'))
+        finishReject(new Error('SMTP connection closed unexpectedly'))
       }
     })
   })
@@ -677,6 +696,179 @@ export const sendAgentNotificationEmail = async ({
   }
 }
 
+export function applyDynamicChatPromptFeatureFlags(
+  template: string,
+  {
+    enableDoNothing = true,
+    enableSendResumeTool = true,
+    enableEmailForwardTool = false
+  }: {
+    enableDoNothing?: boolean
+    enableSendResumeTool?: boolean
+    enableEmailForwardTool?: boolean
+  } = {}
+): string {
+  let result = template
+  if (!enableDoNothing) {
+    // 若未启用静默不回复，将提示词中的不回复规则替换为始终礼貌回应
+    result = result.replace(
+      /4\.\s*【可选择不回复】[^\n]*\n?/i,
+      '4. 【保持沟通】：请始终礼貌随和地回应 HR 的最新消息，表达感谢或保持联系。\n'
+    )
+  }
+  if (!enableSendResumeTool) {
+    result = result.replace(
+      /^[ \t]*-\s*严禁盲目虚构经历应聘[^\n]*send_resume[^\n]*/gm,
+      '   - 严禁盲目虚构经历应聘，严禁向不匹配的岗位承诺或发送简历。'
+    )
+    result = result.replace(
+      /^[ \t]*-\s*【索要简历处置】[^\n]*/gm,
+      '   - 【索要简历处置】：当前未开启自动发简历功能，若招聘方索要简历，请礼貌告知稍后会在平台内发送附件简历。'
+    )
+    result = result.replace(/`?send_resume`?/g, '发简历')
+  }
+  if (!enableEmailForwardTool) {
+    result = result.replace(/[，,]?\s*也【不要调用发邮件工具】/g, '')
+    result = result.replace(
+      /^[ \t]*-\s*严禁擅自替求职者答应或确认具体面试时间。凡涉及确认面试时间或面试邀约[^\n]*/gm,
+      '   - 严禁擅自替求职者答应或确认具体面试时间。凡涉及确认面试时间或面试邀约，请礼貌告知需要先核对个人日程安排后再回复。'
+    )
+    result = result.replace(
+      /^[ \t]*-\s*【邮件通知仅限复杂决策[^\n]*/gm,
+      '   - 【复杂决策与面试邀约处置】：当 HR 提出超出当前能力范围的复杂考核要求、约定/确认面试时间（无论线上视频面还是现场面）或发起面试邀约等需本人亲自决策的事项时，请礼貌告知需要先核对个人日程或由本人确认后回复，严禁擅自答应具体面试时间。'
+    )
+    result = result.replace(/`?send_email_to_candidate`?/g, '求职者本人确认')
+  }
+  return result
+}
+
+const safeParseJson = (str: any) => {
+  try {
+    return JSON.parse(str)
+  } catch {
+    return null
+  }
+}
+
+export function parseDynamicDialogueModelResponse(
+  choiceMessage: any,
+  {
+    enableSendResumeTool = true,
+    enableEmailForwardTool = false,
+    enableDoNothing = true,
+    emailForwardReplyMessage,
+    llmConfig
+  }: {
+    enableSendResumeTool?: boolean
+    enableEmailForwardTool?: boolean
+    enableDoNothing?: boolean
+    emailForwardReplyMessage?: string
+    llmConfig?: any
+  } = {}
+): {
+  action: 'send_text' | 'send_resume' | 'send_email' | 'do_nothing'
+  textToSend: string
+  reason?: string
+  usedLlmConfig?: any
+} {
+  const resolveResumeAction = (args: any) => {
+    if (!enableSendResumeTool) {
+      const candidateReply = args?.reply_message?.trim() || ''
+      return {
+        action: 'send_text' as const,
+        textToSend:
+          candidateReply && !/已发送|发给您|发过去了/.test(candidateReply)
+            ? candidateReply
+            : '您好，收到您的消息，我稍后在平台上为您发送附件简历。',
+        usedLlmConfig: llmConfig
+      }
+    }
+    return {
+      action: 'send_resume' as const,
+      textToSend: args?.reply_message || '好的，简历已发送给您，请您查阅！',
+      reason: args?.reason || 'hr_requested_resume',
+      usedLlmConfig: llmConfig
+    }
+  }
+
+  const resolveEmailAction = (args: any, defaultReason: string) => {
+    if (!enableEmailForwardTool) {
+      const candidateReply = args?.reply_message?.trim() || ''
+      return {
+        action: 'send_text' as const,
+        textToSend:
+          candidateReply && !/邮件|邮箱|转告/.test(candidateReply)
+            ? candidateReply
+            : '您好，我先核对一下个人日程安排，确认后尽快在平台回复您！',
+        usedLlmConfig: llmConfig
+      }
+    }
+    const textToSend =
+      typeof emailForwardReplyMessage === 'string'
+        ? emailForwardReplyMessage.trim()
+        : args?.reply_message?.trim() || ''
+    return {
+      action: 'send_email' as const,
+      textToSend,
+      reason: args?.reason || defaultReason,
+      usedLlmConfig: llmConfig
+    }
+  }
+
+  // 解析结果：检查 tool_calls
+  if (choiceMessage?.tool_calls?.length) {
+    const resumeToolCall = choiceMessage.tool_calls.find((tc: any) => tc.function?.name === 'send_resume')
+    if (resumeToolCall) {
+      return resolveResumeAction(safeParseJson(resumeToolCall.function?.arguments))
+    }
+
+    const emailToolCall = choiceMessage.tool_calls.find(
+      (tc: any) => tc.function?.name === 'send_email_to_candidate'
+    )
+    if (emailToolCall) {
+      return resolveEmailAction(
+        safeParseJson(emailToolCall.function?.arguments),
+        'HR 提出了超出当前能力的诉求或要求邮件转告'
+      )
+    }
+  }
+
+  // 解析文本内容
+  const rawText = choiceMessage?.content?.trim() || ''
+  const parsed = safeParseJson(rawText.replace(/^```json/m, '').replace(/```$/m, ''))
+
+  if (parsed?.action === 'send_email' || parsed?.name === 'send_email_to_candidate') {
+    return resolveEmailAction(parsed, '')
+  }
+  if (parsed?.action === 'send_resume' || parsed?.name === 'send_resume') {
+    return resolveResumeAction(parsed)
+  }
+
+  const textToSend = (parsed?.response || rawText).replace(/^["'“”]/, '').replace(/["'“”]$/, '').trim()
+
+  // 检查是否选择不回复（输出空白或显式静默指令）
+  if (!textToSend || /^(无需回复|不回复|暂不回复|无)$/i.test(textToSend)) {
+    if (!enableDoNothing) {
+      return {
+        action: 'send_text',
+        textToSend: '好的，感谢您的沟通，后续有进展随时联系！',
+        usedLlmConfig: llmConfig
+      }
+    }
+    return {
+      action: 'do_nothing',
+      textToSend: '',
+      usedLlmConfig: llmConfig
+    }
+  }
+
+  return {
+    action: 'send_text',
+    textToSend,
+    usedLlmConfig: llmConfig
+  }
+}
+
 /**
  * 请求大模型生成针对 HR 回复的拟人化多轮对话内容，并支持 send_resume 与 send_email_to_candidate Tool 调用
  */
@@ -685,7 +877,7 @@ export const requestDynamicDialogueReply = async (
   {
     llmConfigIdForPick,
     enableSendResumeTool = true,
-    enableEmailForwardTool = true,
+    enableEmailForwardTool = false,
     enableDoNothing = true,
     jobInfoText,
     emailForwardReplyMessage
@@ -704,13 +896,11 @@ export const requestDynamicDialogueReply = async (
   usedLlmConfig?: any
 }> => {
   let systemMessageTemplate = await getValidTemplate({ type: 'dynamicChat' })
-  if (!enableDoNothing) {
-    // 若未启用静默不回复，将提示词中的不回复规则替换为始终礼貌回应
-    systemMessageTemplate = systemMessageTemplate.replace(
-      /4\.\s*【可选择不回复】[^\n]*\n?/i,
-      '4. 【保持沟通】：请始终礼貌随和地回应 HR 的最新消息，表达感谢或保持联系。\n'
-    )
-  }
+  systemMessageTemplate = applyDynamicChatPromptFeatureFlags(systemMessageTemplate, {
+    enableDoNothing,
+    enableSendResumeTool,
+    enableEmailForwardTool
+  })
   const resumeObject = (await readConfigFile('resumes.json'))?.[0]
   const resumeContent = formatResumeJsonToMarkdown(resumeObject)
   const chatList: Array<{ role: string; content: string }> = [
@@ -829,82 +1019,12 @@ export const requestDynamicDialogueReply = async (
     }
   }
 
-  const defaultEmailReply =
-    '其实我只是一个agent，现在这个问题超出了我的能力范围，已通过邮箱发给候选人本人，如果有什么还想留言的，我也会转告'
-
-  const safeParseJson = (str: any) => {
-    try {
-      return JSON.parse(str)
-    } catch {
-      return null
-    }
-  }
-
-  // 解析结果：检查 tool_calls
-  const choiceMessage = res?.message
-  if (choiceMessage?.tool_calls?.length) {
-    const resumeToolCall = choiceMessage.tool_calls.find((tc: any) => tc.function?.name === 'send_resume')
-    if (resumeToolCall) {
-      const args = safeParseJson(resumeToolCall.function?.arguments)
-      return {
-        action: 'send_resume',
-        textToSend: args?.reply_message || '好的，简历已发送给您，请您查阅！',
-        reason: args?.reason || 'hr_requested_resume',
-        usedLlmConfig: llmConfig
-      }
-    }
-
-    const emailToolCall = choiceMessage.tool_calls.find((tc: any) => tc.function?.name === 'send_email_to_candidate')
-    if (emailToolCall) {
-      const args = safeParseJson(emailToolCall.function?.arguments)
-      const textToSend = typeof emailForwardReplyMessage === 'string'
-        ? emailForwardReplyMessage.trim()
-        : (args?.reply_message?.trim() || '')
-      return {
-        action: 'send_email',
-        textToSend,
-        reason: args?.reason || 'HR 提出了超出当前能力的诉求或要求邮件转告',
-        usedLlmConfig: llmConfig
-      }
-    }
-  }
-
-  // 解析文本内容
-  const rawText = choiceMessage?.content?.trim() || ''
-  const parsed = safeParseJson(rawText.replace(/^```json/m, '').replace(/```$/m, ''))
-
-  if (parsed?.action === 'send_email' || parsed?.name === 'send_email_to_candidate') {
-    const textToSend = typeof emailForwardReplyMessage === 'string'
-      ? emailForwardReplyMessage.trim()
-      : (parsed.reply_message?.trim() || '')
-    return { action: 'send_email', textToSend, reason: parsed.reason || '', usedLlmConfig: llmConfig }
-  }
-  if (parsed?.action === 'send_resume' || parsed?.name === 'send_resume') {
-    return { action: 'send_resume', textToSend: parsed.reply_message || '好的，简历已发送给您，请您查阅！', reason: parsed.reason || '', usedLlmConfig: llmConfig }
-  }
-
-  let textToSend = (parsed?.response || rawText).replace(/^["'“”]/, '').replace(/["'“”]$/, '').trim()
-
-  // 检查是否选择不回复（输出空白或显式静默指令）
-  if (!textToSend || /^(无需回复|不回复|暂不回复|无)$/i.test(textToSend)) {
-    if (!enableDoNothing) {
-      return {
-        action: 'send_text',
-        textToSend: '好的，感谢您的沟通，后续有进展随时联系！',
-        usedLlmConfig: llmConfig
-      }
-    }
-    return {
-      action: 'do_nothing',
-      textToSend: '',
-      usedLlmConfig: llmConfig
-    }
-  }
-
-  return {
-    action: 'send_text',
-    textToSend,
-    usedLlmConfig: llmConfig
-  }
+  return parseDynamicDialogueModelResponse(res?.message, {
+    enableSendResumeTool,
+    enableEmailForwardTool,
+    enableDoNothing,
+    emailForwardReplyMessage,
+    llmConfig
+  })
 }
 

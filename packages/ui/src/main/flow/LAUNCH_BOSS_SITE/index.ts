@@ -354,6 +354,8 @@ const attachRequestsListener = async (target: Target) => {
         }
         if (it.isSelf === false) {
           mappedItem.messageSource = 'hr'
+        } else if (it.isSelf === true && it.bizType === 101) {
+          mappedItem.messageSource = 'greeting_template'
         }
         if (it.type === 'image') {
           mappedItem.imageUrl = it.image?.originImage?.url

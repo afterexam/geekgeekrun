@@ -1,4 +1,4 @@
-import { DataSource, Raw } from "typeorm";
+import { DataSource, In, Raw } from "typeorm";
 import { BossActiveStatusRecord } from "./entity/BossActiveStatusRecord";
 import { BossInfo } from "./entity/BossInfo";
 import { CompanyInfo } from "./entity/CompanyInfo";
@@ -303,12 +303,38 @@ export async function saveChatMessageRecord(
   records: ChatMessageRecord[]
 ) {
   //#region mark-as-not-suit-log
+  if (!records.length) {
+    return
+  }
+  const chatMessageRecordRepository = ds.getRepository(ChatMessageRecord);
+  const midsToCheck = records
+    .filter((it) => it.style === 'sent' && !it.messageSource && it.mid != null)
+    .map((it) => it.mid);
+  const existingMidSet = new Set<string>();
+  for (let i = 0; i < midsToCheck.length; i += 500) {
+    const existingRows = await chatMessageRecordRepository.find({
+      select: ['mid'],
+      where: {
+        mid: In(midsToCheck.slice(i, i + 500))
+      }
+    });
+    for (const row of existingRows) {
+      existingMidSet.add(String(row.mid));
+    }
+  }
   const chatMessageRecordList = records.map(it => {
     const o = new ChatMessageRecord()
     Object.assign(o, it)
+    if (
+      o.style === 'sent' &&
+      !o.messageSource &&
+      o.mid != null &&
+      !existingMidSet.has(String(o.mid))
+    ) {
+      o.messageSource = 'human'
+    }
     return o
   })
-  const chatMessageRecordRepository = ds.getRepository(ChatMessageRecord);
   await chatMessageRecordRepository.save(chatMessageRecordList);
   //#endregion
   return

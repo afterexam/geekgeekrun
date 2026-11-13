@@ -327,6 +327,12 @@ const attachRequestsListener = async (target: Target) => {
           )
         )?.filter(messageForSaveFilter) ?? []
 
+      const encryptJobId =
+        ((await page.evaluate(
+          'document.querySelector(".chat-conversation .chat-im.chat-editor")?.__vue__?.conversation$?.encryptJobId'
+        )) as string | undefined) || ''
+      const sessionId = [bossInfo.encryptBossId, encryptJobId].filter(Boolean).join(':')
+
       const chatRecordList = rawChatRecordList.map((it) => {
         const mappedItem = {} as InstanceType<typeof ChatMessageRecord>
         mappedItem.mid = it.mid
@@ -340,6 +346,15 @@ const attachRequestsListener = async (target: Target) => {
         mappedItem.type = it.type
         mappedItem.time = it.time ? new Date(it.time) : null
         mappedItem.text = it.text
+        if (encryptJobId) {
+          mappedItem.encryptJobId = encryptJobId
+        }
+        if (sessionId) {
+          mappedItem.sessionId = sessionId
+        }
+        if (it.isSelf === false) {
+          mappedItem.messageSource = 'hr'
+        }
         if (it.type === 'image') {
           mappedItem.imageUrl = it.image?.originImage?.url
           mappedItem.imageHeight = it.image?.originImage?.url?.height

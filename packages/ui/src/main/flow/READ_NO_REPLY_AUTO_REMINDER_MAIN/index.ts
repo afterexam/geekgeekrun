@@ -919,6 +919,7 @@ const mainLoop = async () => {
         })
 
         let notifiedMsgKey: string | undefined
+        let shouldPersistHandledTurn = true
 
         if (enableLlmSendResumeTool && replyResult.action === 'send_resume') {
           console.log(`[dynamicChat] 大模型决定通过工具栏主动发送简历 (原因: ${replyResult.reason})`)
@@ -953,15 +954,12 @@ const mainLoop = async () => {
           }
         } else if (enableEmailForwardTool && replyResult.action === 'send_email') {
           console.log(`[dynamicChat] 大模型决定调用邮件工具转告候选人 (原因: ${replyResult.reason})`)
-          if (replyResult.textToSend?.trim()) {
-            await sendMessage(pageMapByName.boss!, replyResult.textToSend)
-          } else {
-            console.log(`[dynamicChat] 转告邮件同时回复 HR 话术未配置或留空，仅在后台静默发送邮件通知本人`)
-          }
 
+          let emailSentOrAlreadyNotified = false
           if (lastMsgKey && existingState?.lastNotifiedMsgKey === lastMsgKey) {
             console.log(`[dynamicChat] 消息 ${lastMsgKey} 已发送过通知邮件，跳过重复发信`)
             notifiedMsgKey = lastMsgKey
+            emailSentOrAlreadyNotified = true
           } else {
             const company = targetBoss.brandName || targetBoss.sourceTitle || '招聘方'
             const reasonText = replyResult.reason || '提出了新要求'
@@ -1009,13 +1007,37 @@ const mainLoop = async () => {
               })
               if (emailRes?.success) {
                 gtag('dynamic_chat_email_forward_sent')
+                emailSentOrAlreadyNotified = true
                 if (lastMsgKey) {
                   notifiedMsgKey = lastMsgKey
+                  // 先落库已通知标识，避免后续向 HR 发送消息失败重试时重复发信
+                  await upsertDynamicChatState({
+                    encryptBossId: targetBoss.encryptBossId,
+                    encryptJobId: currentEncryptJobId || existingState?.encryptJobId,
+                    lastNotifiedMsgKey: lastMsgKey
+                  })
                 }
+              } else {
+                console.warn(
+                  `[dynamicChat] 邮件发送未成功 (${emailRes?.error || 'UNKNOWN'})，暂不回复 HR 且不标记消息为已处理以便后续重试`
+                )
               }
             } catch (err) {
-              console.error('[dynamicChat] 邮件发送异常:', err)
+              console.error('[dynamicChat] 邮件发送异常，暂不回复 HR 且不标记消息为已处理以便后续重试:', err)
             }
+          }
+
+          if (!emailSentOrAlreadyNotified) {
+            shouldPersistHandledTurn = false
+            await upsertDynamicChatState({
+              encryptBossId: targetBoss.encryptBossId,
+              encryptJobId: currentEncryptJobId || existingState?.encryptJobId,
+              lastAction: 'send_email_failed'
+            })
+          } else if (replyResult.textToSend?.trim()) {
+            await sendMessage(pageMapByName.boss!, replyResult.textToSend)
+          } else {
+            console.log(`[dynamicChat] 转告邮件同时回复 HR 话术未配置或留空，仅在后台静默发送邮件通知本人`)
           }
         } else if (replyResult.action === 'send_resume' || replyResult.action === 'send_email') {
           console.warn(`[dynamicChat] 工具 ${replyResult.action} 当前未开启，跳过执行`)
@@ -1027,29 +1049,31 @@ const mainLoop = async () => {
           gtag('dynamic_chat_text_sent')
         }
 
-        const nextTurns = currentTurns + 1
-        let persistedAction: string = replyResult.action
-        if (
-          replyResult.action === 'do_nothing' ||
-          (replyResult.action === 'send_text' && !replyResult.textToSend?.trim())
-        ) {
-          persistedAction = 'do_nothing'
-        } else if (!enableLlmSendResumeTool && replyResult.action === 'send_resume') {
-          persistedAction = 'blocked_send_resume'
-        } else if (!enableEmailForwardTool && replyResult.action === 'send_email') {
-          persistedAction = 'blocked_send_email'
-        }
+        if (shouldPersistHandledTurn) {
+          const nextTurns = currentTurns + 1
+          let persistedAction: string = replyResult.action
+          if (
+            replyResult.action === 'do_nothing' ||
+            (replyResult.action === 'send_text' && !replyResult.textToSend?.trim())
+          ) {
+            persistedAction = 'do_nothing'
+          } else if (!enableLlmSendResumeTool && replyResult.action === 'send_resume') {
+            persistedAction = 'blocked_send_resume'
+          } else if (!enableEmailForwardTool && replyResult.action === 'send_email') {
+            persistedAction = 'blocked_send_email'
+          }
 
-        await upsertDynamicChatState({
-          encryptBossId: targetBoss.encryptBossId,
-          encryptJobId: currentEncryptJobId || existingState?.encryptJobId,
-          turnCount: nextTurns,
-          lastHandledMsgKey: lastMsgKey || existingState?.lastHandledMsgKey,
-          lastAction: persistedAction,
-          isHandedOver: false,
-          ...(notifiedMsgKey ? { lastNotifiedMsgKey: notifiedMsgKey } : {})
-        })
-        await markDynamicChatHandedOverIfNeeded(targetBoss, nextTurns, maxDynamicChatTurns)
+          await upsertDynamicChatState({
+            encryptBossId: targetBoss.encryptBossId,
+            encryptJobId: currentEncryptJobId || existingState?.encryptJobId,
+            turnCount: nextTurns,
+            lastHandledMsgKey: lastMsgKey || existingState?.lastHandledMsgKey,
+            lastAction: persistedAction,
+            isHandedOver: false,
+            ...(notifiedMsgKey ? { lastNotifiedMsgKey: notifiedMsgKey } : {})
+          })
+          await markDynamicChatHandedOverIfNeeded(targetBoss, nextTurns, maxDynamicChatTurns)
+        }
       } catch (err: any) {
         console.error('[dynamicChat] 动态回复异常:', err)
       }

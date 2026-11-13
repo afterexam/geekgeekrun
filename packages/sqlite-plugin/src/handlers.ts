@@ -414,11 +414,11 @@ export async function saveDynamicChatState(
   if (existing) {
     Object.assign(record, existing);
   }
-  for (const [k, v] of Object.entries(patch)) {
-    if (v !== undefined) {
-      (record as any)[k] = v;
-    }
-  }
+  const { encryptBossId: _id, ...updatablePatch } = patch;
+  Object.assign(
+    record,
+    Object.fromEntries(Object.entries(updatablePatch).filter(([, v]) => v !== undefined))
+  );
   record.updatedAt = patch.updatedAt ?? new Date();
   return await repo.save(record);
 }

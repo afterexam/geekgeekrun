@@ -38,3 +38,27 @@ export interface ChatListItem {
   tipType: TipType
   lastIsSelf: boolean
 }
+
+export interface ChatHistoryMessageItem {
+  isSelf: boolean
+  text?: string
+  messageType?: string
+  isSystem?: boolean
+  time?: number
+  status?: MsgStatus
+  bizType?: number
+}
+
+export interface SelectedFriendInfo {
+  positionName?: string
+  brandName?: string
+  salaryDesc?: string
+  cityName?: string
+  degreeName?: string
+  experienceName?: string
+}
+
+export interface ConversationInfo {
+  encryptJobId?: string
+  bothTalked?: boolean
+}

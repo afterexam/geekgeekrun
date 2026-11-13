@@ -1,12 +1,7 @@
 import OpenAI from "openai";
-import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-
-const httpsAgent = new https.Agent({
-  rejectUnauthorized: false
-});
 
 // ponytail: stdlib append-only daily JSONL trace, zero external dependencies
 function logTrace(entry) {
@@ -24,7 +19,7 @@ function logTrace(entry) {
 /**
  * 调用 Chat Completions API，支持推理模型（thinking 参数）。
  *
- * @param {{ baseURL: string, apiKey: string, model: string, max_tokens?: number, temperature?: number, thinking?: { enabled?: boolean, budget?: number } }} config
+ * @param {{ baseURL: string, apiKey: string, model: string, max_tokens?: number, temperature?: number, thinking?: { enabled?: boolean, budget?: number }, response_format?: object, tools?: Array<object>, tool_choice?: unknown }} config
  * @param {Array<{ role: string, content: string }>} messages
  */
 export async function completes(
@@ -43,8 +38,7 @@ export async function completes(
 ) {
   const openai = new OpenAI({
     baseURL,
-    apiKey,
-    httpAgent: httpsAgent
+    apiKey
   });
 
   const isThinking = !!(thinking?.enabled && thinking?.budget);
@@ -52,7 +46,7 @@ export async function completes(
   // 推理模型开启 thinking 时，max_tokens 必须大于 thinking_budget，否则会因长度上限截断 JSON。
   // 调用方若未显式传 max_tokens，按是否启用 thinking 给一个安全的默认值。
   const resolvedMaxTokens =
-    typeof max_tokens === 'number'
+    typeof max_tokens === "number"
       ? max_tokens
       : isThinking
         ? 8192
@@ -60,7 +54,7 @@ export async function completes(
 
   // temperature：推理模型启用 thinking 时建议 ≥0.5（部分 provider 限制），普通 JSON 输出用 0.1。
   const resolvedTemperature =
-    typeof temperature === 'number'
+    typeof temperature === "number"
       ? temperature
       : isThinking
         ? 0.6
@@ -70,7 +64,7 @@ export async function completes(
     messages,
     model,
     max_tokens: resolvedMaxTokens,
-    temperature: resolvedTemperature,
+    temperature: resolvedTemperature
   };
 
   if (isThinking) {
@@ -100,12 +94,12 @@ export async function completes(
     // reasoning_content 仅推理模型填充，普通模型为 undefined
     const msg = completion.choices[0].message;
     if (msg.reasoning_content) {
-      console.log('[gpt-request] reasoning_content:', String(msg.reasoning_content ?? '').slice(0, 200));
+      console.log("[gpt-request] reasoning_content:", String(msg.reasoning_content ?? "").slice(0, 200));
     }
     if (msg.tool_calls) {
-      console.log('[gpt-request] tool_calls:', JSON.stringify(msg.tool_calls));
+      console.log("[gpt-request] tool_calls:", JSON.stringify(msg.tool_calls));
     }
-    console.log('[gpt-request] content:', (msg.content ?? '').slice(0, 200));
+    console.log("[gpt-request] content:", (msg.content ?? "").slice(0, 200));
 
     logTrace({
       timestamp: new Date().toISOString(),

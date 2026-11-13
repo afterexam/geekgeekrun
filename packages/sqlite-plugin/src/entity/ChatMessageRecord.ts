@@ -30,7 +30,7 @@ export class ChatMessageRecord {
   @Column({
     nullable: true
   })
-  text: string;
+  text: string | null;
 
   @Column({
     nullable: true

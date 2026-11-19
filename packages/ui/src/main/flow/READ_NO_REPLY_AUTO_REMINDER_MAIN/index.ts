@@ -1152,7 +1152,9 @@ const mainLoop = async () => {
         } else if (replyResult.action === 'send_resume' || replyResult.action === 'send_email') {
           console.warn(`[dynamicChat] 工具 ${replyResult.action} 当前未开启，跳过执行`)
         } else if (replyResult.action === 'do_nothing' || !replyResult.textToSend?.trim()) {
-          console.log(`[dynamicChat] 大模型判断无需回复 HR (${targetBoss.name})，保持静默`)
+          console.log(
+            `[dynamicChat] 大模型判断无需回复 HR (${targetBoss.name})，保持静默 (原因: ${replyResult.reason || '未说明'})`
+          )
         } else {
           console.log(`[dynamicChat] 发送拟人文本回复: ${replyResult.textToSend}`)
           await sendMessage(pageMapByName.boss!, replyResult.textToSend)

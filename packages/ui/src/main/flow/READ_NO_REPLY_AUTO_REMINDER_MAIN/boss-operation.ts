@@ -258,7 +258,7 @@ export const defaultPromptMap = {
    - 严禁擅自替求职者做出过度确定性承诺（到岗时间表述为：可根据录用流程及个人安排协商到岗，预计近期/两周内可到岗）。
    - 严禁擅自替求职者答应或确认具体面试时间。凡涉及确认面试时间或面试邀约，必须调用 \`send_email_to_candidate\` 通知本人核对日程。
    - 聚焦核心技术与项目优势，严禁过度谄媚或主动暴露无关劣势（如“掌握少但愿意学”等弱势表态）。
-4. 【可选择不回复】：若招聘方发来的消息属于对话自然闭环（如仅发了“好的”、“收到”、“谢谢”、“祝好”等），且当前无需继续追问或强行回复，请直接输出空内容，系统将保持安静、不向招聘方发送任何消息。
+4. 【可选择不回复】：若招聘方发来的消息属于对话自然闭环（如仅发了“好的”、“收到”、“谢谢”、“祝好”等），且当前无需继续追问或强行回复，请调用 \`do_nothing\` 工具并在 reason 中说明原因，系统将保持安静、不向招聘方发送任何消息；严禁把“无需回复”等字样作为回复正文输出。
 5. 【动作规范与联系方式处理 - 引导在平台沟通】：
    - 【索要微信/电话/联系方式处置】：招聘方提出交换微信/电话、索要联系方式、或出现交换联系方式系统卡片时，【严禁私自给联系方式】，也【不要调用发邮件工具】！直接礼貌回复婉拒加微信，并引导在平台内沟通（例如：“您好，麻烦您直接在 BOSS 直聘平台沟通即可，有相关要求或面试安排我们可以先在平台交流，谢谢理解！”）。特别是上来未聊简历/职位直接索要微信的，多为垃圾引流，坚决在平台沟通。
    - 【索要简历处置】：若招聘方明确索要简历（如“发份简历”、“发PDF/Word”、“看下简历”等），必须调用 \`send_resume\` 工具。
@@ -608,6 +608,45 @@ export const RESUME_TOOL_DEFINITION: LlmToolDefinition = {
   }
 }
 
+export const DO_NOTHING_TOOL_DEFINITION: LlmToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'do_nothing',
+    description:
+      '当招聘方消息属于对话自然闭环（如仅回复“好的”“收到”“谢谢”“祝好”），无需继续回复时调用。调用后系统不会向招聘方发送任何消息。',
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: '不回复的原因，例如：HR 仅回复“好的”，对话已自然结束'
+        }
+      },
+      required: ['reason']
+    }
+  }
+}
+
+/**
+ * 去掉标点、括号与空白后判断是否为静默指令，避免把“无需回复。”“（不回复）”等字样原样发给 HR
+ */
+const SILENCE_PHRASE_RE = /^(无需回复|不需要回复|不用回复|不回复|暂不回复|无需回应|保持静默|静默|无|do_?nothing)$/i
+const SILENCE_HINT_RE = /(无需回复|不需要回复|不用回复|不回复|暂不回复|保持静默|do_?nothing)/i
+export function isSilenceInstruction(text: string): boolean {
+  const normalized = text.replace(/[\s\p{P}\p{S}]/gu, '')
+  if (!normalized) return false
+  if (SILENCE_PHRASE_RE.test(normalized)) return true
+  // 短句中出现静默关键词（如“无需回复，对话已结束”）也视为静默，不发送
+  return normalized.length <= 20 && SILENCE_HINT_RE.test(normalized)
+}
+
+export class EmptyLlmReplyError extends Error {
+  constructor(message = '大模型返回空内容，且未调用 do_nothing，本轮不标记为已处理，等待下次重试') {
+    super(message)
+    this.name = 'EmptyLlmReplyError'
+  }
+}
+
 export const getEmailForwardToolDefinition = (customReplyMessage?: string) => ({
   type: 'function' as const,
   function: {
@@ -938,6 +977,22 @@ export function parseDynamicDialogueModelResponse(
     }
   }
 
+  const resolveSilence = (reason: string) => {
+    if (!enableDoNothing) {
+      return {
+        action: 'send_text' as const,
+        textToSend: '好的，感谢您的沟通，后续有进展随时联系！',
+        usedLlmConfig: llmConfig
+      }
+    }
+    return {
+      action: 'do_nothing' as const,
+      textToSend: '',
+      reason,
+      usedLlmConfig: llmConfig
+    }
+  }
+
   // 解析结果：检查 tool_calls
   if (choiceMessage?.tool_calls?.length) {
     const resumeToolCall = choiceMessage.tool_calls.find(
@@ -945,6 +1000,14 @@ export function parseDynamicDialogueModelResponse(
     )
     if (resumeToolCall) {
       return resolveResumeAction(safeParseJson(resumeToolCall.function?.arguments))
+    }
+
+    const doNothingToolCall = choiceMessage.tool_calls.find(
+      (tc) => tc.function?.name === 'do_nothing'
+    )
+    if (doNothingToolCall && !resumeToolCall) {
+      const args = safeParseJson(doNothingToolCall.function?.arguments)
+      return resolveSilence(readStringField(args?.reason) || 'llm_do_nothing')
     }
 
     const emailToolCall = choiceMessage.tool_calls.find(
@@ -969,26 +1032,21 @@ export function parseDynamicDialogueModelResponse(
     return resolveResumeAction(parsed)
   }
 
-  const parsedResponse = readStringField(parsed?.response)
-  const textToSend = (parsedResponse || rawText)
+  // 模型按 JSON 输出 {"response": ""} 时以 response 字段为准，避免把 JSON 原文发给 HR
+  const hasResponseField = !!parsed && Object.hasOwn(parsed, 'response')
+  const textToSend = (hasResponseField ? readStringField(parsed?.response) : rawText)
     .replace(/^["'“”]/, '')
     .replace(/["'“”]$/, '')
     .trim()
 
-  // 检查是否选择不回复（输出空白或显式静默指令）
-  if (!textToSend || /^(无需回复|不回复|暂不回复|无)$/i.test(textToSend)) {
-    if (!enableDoNothing) {
-      return {
-        action: 'send_text',
-        textToSend: '好的，感谢您的沟通，后续有进展随时联系！',
-        usedLlmConfig: llmConfig
-      }
-    }
-    return {
-      action: 'do_nothing',
-      textToSend: '',
-      usedLlmConfig: llmConfig
-    }
+  // 空输出不再等同于“选择不回复”：可能是推理模型只填了 reasoning_content、被截断或接口异常
+  if (!textToSend) {
+    throw new EmptyLlmReplyError()
+  }
+
+  // 兜底：模型未调用工具，而是把静默指令写进正文（含标点/括号变体），一律不发送
+  if (isSilenceInstruction(textToSend)) {
+    return resolveSilence('text_silence_instruction')
   }
 
   return {
@@ -1085,6 +1143,9 @@ export const requestDynamicDialogueReply = async (
   }
   if (enableEmailForwardTool) {
     tools.push(getEmailForwardToolDefinition(emailForwardReplyMessage))
+  }
+  if (enableDoNothing) {
+    tools.push(DO_NOTHING_TOOL_DEFINITION)
   }
 
   const { choice: res, llmConfig } = await requestChatCompletionWithFallback({
